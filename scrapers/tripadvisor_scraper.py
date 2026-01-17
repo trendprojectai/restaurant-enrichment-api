@@ -14,11 +14,14 @@ def search_tripadvisor(name: str, city: str = "London"):
     r = requests.get(url, headers=HEADERS, timeout=10)
     soup = BeautifulSoup(r.text, "html.parser")
 
-    link = soup.select_one("a[href*='/Restaurant_Review']")
-    if not link:
-        return None
+    candidates = soup.select("a[href*='/Restaurant_Review']")
 
-    return "https://www.tripadvisor.co.uk" + link["href"]
+    for link in candidates:
+        text = link.get_text(" ", strip=True).lower()
+        if name.lower() in text:
+            return "https://www.tripadvisor.co.uk" + link["href"]
+
+    return None
 
 
 def scrape_tripadvisor_page(url: str):
