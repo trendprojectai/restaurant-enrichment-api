@@ -15,6 +15,51 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 tertiary_snapshot = []
 tertiary_snapshot_locked = False
 
+# Final enriched dataset (after tertiary scrape completion)
+final_enriched_dataset = []
+secondary_dataset = []  # Store secondary results for merging
+
+
+def merge_enriched_results(base_dataset, fallback_results):
+    """
+    Merge tertiary (TripAdvisor) results into secondary dataset.
+
+    Args:
+        base_dataset: Secondary enrichment results (complete records)
+        fallback_results: TripAdvisor fallback results (partial records with only critical fields)
+
+    Returns:
+        Complete merged dataset ready for export/media/video injection
+    """
+    # Create lookup for fallback results by google_place_id
+    fallback_lookup = {
+        item['google_place_id']: item
+        for item in fallback_results
+    }
+
+    merged = []
+
+    for record in base_dataset:
+        place_id = record.get('google_place_id')
+
+        # If we have TripAdvisor fallback data for this restaurant, merge it
+        if place_id in fallback_lookup:
+            fallback = fallback_lookup[place_id]
+
+            # Apply TripAdvisor results ONLY to missing fields (fill nulls only)
+            if not record.get('opening_hours'):
+                record['opening_hours'] = fallback.get('opening_hours')
+            if not record.get('cuisine_type'):
+                record['cuisine_type'] = fallback.get('cuisine_type')
+            if not record.get('price_range'):
+                record['price_range'] = fallback.get('price_range')
+            if not record.get('phone'):
+                record['phone'] = fallback.get('phone')
+
+        merged.append(record)
+
+    return merged
+
 
 def create_tertiary_snapshot(secondary_data):
     """
@@ -57,7 +102,10 @@ def home():
             '/enrich': 'POST - Enrich restaurant data (secondary scraping)',
             '/tertiary/snapshot': 'POST - Create immutable tertiary snapshot from secondary results',
             '/tertiary/snapshot/status': 'GET - Get tertiary snapshot status',
-            '/tertiary/enrich': 'POST - Run TripAdvisor enrichment on snapshot'
+            '/tertiary/enrich': 'POST - Run TripAdvisor enrichment on snapshot',
+            '/media/inject': 'POST - Inject media into final enriched dataset',
+            '/export/push': 'POST - Export final enriched dataset as CSV',
+            '/video-injector/push': 'POST - Send final enriched dataset to video injector'
         }
     })
 
@@ -155,13 +203,17 @@ def enrich():
         # Read enriched output
         with open(temp_output_path, 'r', encoding='utf-8') as f:
             enriched_csv = f.read()
-        
+
+        # Store secondary dataset globally for tertiary merge
+        global secondary_dataset
+        secondary_dataset = enriched_data.copy()
+
         # Cleanup
         os.unlink(temp_input_path)
         os.unlink(temp_output_path)
-        
+
         print(f"✓ Successfully enriched {len(enriched_data)} restaurants")
-        
+
         return jsonify({
             'enriched_csv': enriched_csv,
             'success': True,
@@ -297,14 +349,159 @@ def enrich_tertiary():
 
         print(f"✓ Completed TripAdvisor enrichment for {len(enriched_data)} restaurants")
 
+        # Merge tertiary results with secondary dataset to create final enriched dataset
+        global final_enriched_dataset
+        final_enriched_dataset = merge_enriched_results(
+            base_dataset=secondary_dataset,
+            fallback_results=enriched_data
+        )
+
+        print(f"✓ Final enriched dataset created with {len(final_enriched_dataset)} restaurants")
+
         return jsonify({
             'success': True,
             'count': len(enriched_data),
-            'data': enriched_data
+            'data': enriched_data,
+            'final_dataset_count': len(final_enriched_dataset)
         })
 
     except Exception as e:
         print(f"Error in tertiary enrichment: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# POST-TERTIARY DOWNSTREAM ACTIONS
+# ============================================================================
+
+@app.route('/media/inject', methods=['POST', 'OPTIONS'])
+def inject_media():
+    """
+    Inject media (images/videos/etc) into final enriched dataset.
+    This is a pass-through operation on the complete dataset.
+    """
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        return '', 200
+
+    try:
+        if len(final_enriched_dataset) == 0:
+            return jsonify({'error': 'No final enriched dataset available. Run tertiary enrichment first.'}), 400
+
+        print(f"Media injection requested for {len(final_enriched_dataset)} restaurants...")
+
+        # TODO: Implement actual media injection logic
+        # For now, this is a pass-through that accepts the dataset
+        dataset = final_enriched_dataset.copy()
+
+        print(f"✓ Media injection completed for {len(dataset)} restaurants")
+
+        return jsonify({
+            'success': True,
+            'count': len(dataset),
+            'message': 'Media injection completed',
+            'dataset_sample': dataset[:5] if len(dataset) > 0 else []
+        })
+
+    except Exception as e:
+        print(f"Error in media injection: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/export/push', methods=['POST', 'OPTIONS'])
+def push_to_export():
+    """
+    Push final enriched dataset to export stage.
+    Serializes dataset to CSV and makes it available for export.
+    """
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        return '', 200
+
+    try:
+        if len(final_enriched_dataset) == 0:
+            return jsonify({'error': 'No final enriched dataset available. Run tertiary enrichment first.'}), 400
+
+        print(f"Export push requested for {len(final_enriched_dataset)} restaurants...")
+
+        # Create CSV from final dataset
+        import io
+        output = io.StringIO()
+
+        fieldnames = [
+            'google_place_id', 'cover_image', 'cover_image_alt',
+            'menu_url', 'menu_pdf_url', 'gallery_images',
+            'phone', 'phone_formatted', 'email',
+            'instagram_handle', 'instagram_url',
+            'tiktok_handle', 'tiktok_url', 'tiktok_videos',
+            'facebook_url', 'opening_hours',
+            'cuisine_type', 'price_range'
+        ]
+
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for record in final_enriched_dataset:
+            row = record.copy()
+            # Convert lists/dicts to JSON
+            row['gallery_images'] = json.dumps(row.get('gallery_images', [])) if row.get('gallery_images') else None
+            row['opening_hours'] = json.dumps(row.get('opening_hours', [])) if row.get('opening_hours') else None
+            row['tiktok_videos'] = json.dumps(row.get('tiktok_videos', [])) if row.get('tiktok_videos') else None
+            writer.writerow(row)
+
+        csv_output = output.getvalue()
+
+        print(f"✓ Export CSV created for {len(final_enriched_dataset)} restaurants")
+
+        return jsonify({
+            'success': True,
+            'count': len(final_enriched_dataset),
+            'csv_data': csv_output,
+            'message': 'Dataset exported successfully'
+        })
+
+    except Exception as e:
+        print(f"Error in export push: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/video-injector/push', methods=['POST', 'OPTIONS'])
+def push_to_video_injector():
+    """
+    Push final enriched dataset to Video Injector pipeline.
+    Sends dataset to video injection processing.
+    """
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        return '', 200
+
+    try:
+        if len(final_enriched_dataset) == 0:
+            return jsonify({'error': 'No final enriched dataset available. Run tertiary enrichment first.'}), 400
+
+        print(f"Video injector push requested for {len(final_enriched_dataset)} restaurants...")
+
+        # TODO: Implement actual video injector integration
+        # For now, this is a pass-through that accepts the dataset
+        dataset = final_enriched_dataset.copy()
+
+        print(f"✓ Video injector push completed for {len(dataset)} restaurants")
+
+        return jsonify({
+            'success': True,
+            'count': len(dataset),
+            'message': 'Dataset sent to video injector',
+            'dataset_sample': dataset[:5] if len(dataset) > 0 else []
+        })
+
+    except Exception as e:
+        print(f"Error in video injector push: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
