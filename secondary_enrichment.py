@@ -22,6 +22,8 @@ import logging
 import requests
 import cloudscraper  # Cloudflare bypass
 from bs4 import BeautifulSoup
+import trafilatura  # Smart content extraction
+from price_parser import Price  # Menu price parsing
 
 # Disable SSL warnings
 import urllib3
@@ -820,10 +822,29 @@ class RestaurantEnricher:
 
         return None
 
+    # -------- TRAFILATURA HELPER --------
+
+    def _extract_clean_content(self, url: str, html_text: str) -> Optional[str]:
+        """Extract clean, main content using trafilatura."""
+        try:
+            # Trafilatura extracts the main content, removing nav/footer/ads
+            extracted = trafilatura.extract(
+                html_text,
+                include_comments=False,
+                include_tables=True,
+                no_fallback=False,
+                favor_recall=True,
+                url=url
+            )
+            return extracted
+        except Exception as e:
+            logger.debug(f"Trafilatura extraction failed: {str(e)[:50]}")
+            return None
+
     # -------- CUISINE & PRICE EXTRACTION --------
 
     def _extract_cuisine_type(self, soup: BeautifulSoup, html_text: str) -> Optional[str]:
-        """Extract cuisine type."""
+        """ENHANCED: Extract cuisine type with trafilatura fallback."""
 
         # Strategy 1: Schema.org
         schema_cuisine = soup.find(itemprop='servesCuisine')
@@ -835,40 +856,113 @@ class RestaurantEnricher:
         if meta_cuisine and meta_cuisine.get('content'):
             return meta_cuisine['content']
 
-        # Strategy 3: Common cuisine keywords in text
-        cuisines = [
-            'Italian', 'French', 'Japanese', 'Chinese', 'Indian', 'Thai', 'Mexican',
-            'Spanish', 'Greek', 'American', 'British', 'Mediterranean', 'Asian',
-            'Vietnamese', 'Korean', 'Turkish', 'Lebanese', 'Moroccan', 'Brazilian',
-            'Argentinian', 'Peruvian', 'Ethiopian', 'Caribbean', 'Fusion',
-            'Seafood', 'Steakhouse', 'Vegetarian', 'Vegan', 'Sushi', 'Ramen',
-            'Pizza', 'Burger', 'BBQ', 'Grill', 'Tapas', 'Dim Sum'
-        ]
+        # Strategy 3: Common cuisine keywords in HTML
+        cuisines_keywords = {
+            'Italian': ['italian', 'pasta', 'pizza', 'risotto', 'osso buco', 'carbonara', 'bolognese'],
+            'Japanese': ['japanese', 'sushi', 'ramen', 'sashimi', 'tempura', 'teriyaki', 'izakaya'],
+            'Chinese': ['chinese', 'dim sum', 'wonton', 'szechuan', 'cantonese', 'peking duck'],
+            'Indian': ['indian', 'curry', 'tandoori', 'biryani', 'masala', 'naan', 'tikka'],
+            'Thai': ['thai', 'pad thai', 'tom yum', 'green curry', 'massaman'],
+            'French': ['french', 'bistro', 'brasserie', 'coq au vin', 'bouillabaisse', 'cassoulet'],
+            'Mexican': ['mexican', 'tacos', 'burritos', 'enchiladas', 'quesadilla', 'guacamole'],
+            'Spanish': ['spanish', 'tapas', 'paella', 'chorizo', 'jamón', 'sangria'],
+            'Greek': ['greek', 'souvlaki', 'moussaka', 'tzatziki', 'gyros', 'feta'],
+            'Turkish': ['turkish', 'kebab', 'mezze', 'baklava', 'doner'],
+            'Lebanese': ['lebanese', 'hummus', 'falafel', 'shawarma', 'tabbouleh'],
+            'Korean': ['korean', 'kimchi', 'bibimbap', 'bulgogi', 'korean bbq'],
+            'Vietnamese': ['vietnamese', 'pho', 'banh mi', 'spring rolls'],
+            'Mediterranean': ['mediterranean', 'mezze', 'hummus', 'olives'],
+            'American': ['american', 'burger', 'steak', 'ribs', 'hot dog'],
+            'British': ['british', 'fish and chips', 'sunday roast', 'pie and mash'],
+            'Seafood': ['seafood', 'oysters', 'lobster', 'crab', 'mussels'],
+        }
 
-        for cuisine in cuisines:
-            if re.search(r'\b' + cuisine + r'\b', html_text, re.IGNORECASE):
-                return cuisine
+        html_lower = html_text.lower()
+
+        # Check keywords with scoring
+        scores = {}
+        for cuisine, keywords in cuisines_keywords.items():
+            score = sum(1 for keyword in keywords if keyword in html_lower)
+            if score > 0:
+                scores[cuisine] = score
+
+        if scores:
+            # Return cuisine with highest score
+            best_cuisine = max(scores.items(), key=lambda x: x[1])
+            if best_cuisine[1] >= 2:  # At least 2 keywords
+                return best_cuisine[0]
+
+        # Strategy 4: Trafilatura clean content (removes noise)
+        clean_content = self._extract_clean_content(None, html_text)
+        if clean_content:
+            content_lower = clean_content.lower()
+            for cuisine, keywords in cuisines_keywords.items():
+                if any(keyword in content_lower for keyword in keywords[:3]):  # Check top 3 keywords
+                    return cuisine
 
         return None
 
     def _extract_price_range(self, soup: BeautifulSoup, html_text: str) -> Optional[str]:
-        """Extract price range."""
+        """ENHANCED: Extract price range with price-parser."""
 
         # Strategy 1: Schema.org
         schema_price = soup.find(itemprop='priceRange')
         if schema_price:
             return schema_price.get_text(strip=True)
 
-        # Strategy 2: Look for £ symbols
+        # Strategy 2: Parse actual menu prices if present
+        try:
+            prices = []
+
+            # Find all price patterns
+            price_patterns = re.findall(r'£\s?\d+(?:\.\d{2})?', html_text)
+
+            for pattern in price_patterns[:50]:  # Limit to avoid processing too many
+                parsed = Price.fromstring(pattern)
+                if parsed.amount:
+                    try:
+                        amount = float(parsed.amount)
+                        # Filter reasonable restaurant prices (£3-£150)
+                        if 3 <= amount <= 150:
+                            prices.append(amount)
+                    except:
+                        pass
+
+            if len(prices) >= 3:  # Need at least 3 prices for reliable estimate
+                avg_price = sum(prices) / len(prices)
+
+                # Determine range based on average
+                if avg_price < 12:
+                    return '£'
+                elif avg_price < 25:
+                    return '££'
+                elif avg_price < 45:
+                    return '£££'
+                else:
+                    return '££££'
+        except Exception as e:
+            logger.debug(f"Price parsing failed: {str(e)[:50]}")
+
+        # Strategy 3: Look for £ symbols
         pound_pattern = r'(£{1,4})\b'
         match = re.search(pound_pattern, html_text)
         if match:
             return match.group(1)
 
-        # Strategy 3: Look for "price range" text
-        price_pattern = r'(cheap|budget|moderate|mid-range|expensive|luxury|fine dining)'
+        # Strategy 4: Look for "price range" text
+        price_pattern = r'(cheap|budget|affordable|moderate|mid-range|expensive|luxury|fine dining|upscale)'
         match = re.search(price_pattern, html_text, re.IGNORECASE)
         if match:
+            price_word = match.group(1).lower()
+            # Map words to price symbols
+            if price_word in ['cheap', 'budget', 'affordable']:
+                return '£'
+            elif price_word in ['moderate', 'mid-range']:
+                return '££'
+            elif price_word in ['expensive', 'upscale']:
+                return '£££'
+            elif price_word in ['luxury', 'fine dining']:
+                return '££££'
             return match.group(1).title()
 
         return None
