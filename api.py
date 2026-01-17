@@ -74,24 +74,44 @@ def enrich():
                 enriched_data.append({
                     'google_place_id': restaurant.get('google_place_id', ''),
                     'cover_image': None,
+                    'cover_image_alt': None,
                     'menu_url': None,
                     'menu_pdf_url': None,
                     'gallery_images': [],
                     'phone': None,
+                    'phone_formatted': None,
+                    'email': None,
+                    'instagram_handle': None,
+                    'instagram_url': None,
+                    'tiktok_handle': None,
+                    'tiktok_url': None,
+                    'tiktok_videos': [],
+                    'facebook_url': None,
                     'opening_hours': None,
+                    'cuisine_type': None,
+                    'price_range': None,
                 })
         
         # Write output CSV
         with open(temp_output_path, 'w', encoding='utf-8', newline='') as f:
-            fieldnames = ['google_place_id', 'cover_image', 'menu_url', 'menu_pdf_url', 
-                         'gallery_images', 'phone', 'opening_hours']
+            fieldnames = [
+                'google_place_id', 'cover_image', 'cover_image_alt',
+                'menu_url', 'menu_pdf_url', 'gallery_images',
+                'phone', 'phone_formatted', 'email',
+                'instagram_handle', 'instagram_url',
+                'tiktok_handle', 'tiktok_url', 'tiktok_videos',
+                'facebook_url', 'opening_hours',
+                'cuisine_type', 'price_range'
+            ]
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            
+
             for data in enriched_data:
                 row = data.copy()
-                row['gallery_images'] = json.dumps(row['gallery_images']) if row['gallery_images'] else None
-                row['opening_hours'] = json.dumps(row['opening_hours']) if row['opening_hours'] else None
+                # Convert lists/dicts to JSON
+                row['gallery_images'] = json.dumps(row.get('gallery_images', [])) if row.get('gallery_images') else None
+                row['opening_hours'] = json.dumps(row.get('opening_hours', [])) if row.get('opening_hours') else None
+                row['tiktok_videos'] = json.dumps(row.get('tiktok_videos', [])) if row.get('tiktok_videos') else None
                 writer.writerow(row)
         
         # Read enriched output
