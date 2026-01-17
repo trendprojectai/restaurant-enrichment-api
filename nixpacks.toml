@@ -1,2 +1,2 @@
 [phases.setup]
-aptPkgs = ["libxml2-dev", "libxslt-dev", "pkg-config"]
+aptPkgs = ["libxml2", "libxslt1.1", "libxml2-dev", "libxslt-dev", "pkg-config"]
