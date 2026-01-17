@@ -8,8 +8,15 @@ import json
 
 app = Flask(__name__)
 
-# Enable CORS for all origins (your Gemini Studio app can connect)
-CORS(app, origins=["*"], supports_credentials=True)
+# FIXED: Proper CORS configuration for all origins
+CORS(app, resources={
+    r"/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Accept"],
+        "expose_headers": ["Content-Type"]
+    }
+})
 
 @app.route('/', methods=['GET'])
 def home():
