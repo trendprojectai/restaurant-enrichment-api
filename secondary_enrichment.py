@@ -144,7 +144,11 @@ class RestaurantEnricher:
 
         # TripAdvisor fallback for missing data
         if needs_tripadvisor(enrichment):
-            logger.info(f"  → Missing key fields, trying TripAdvisor fallback...")
+            missing = [
+                f for f in TRIPADVISOR_FIELDS
+                if enrichment.get(f) in (None, [], "")
+            ]
+            logger.info(f"  → TripAdvisor needed for fields: {missing}")
             try:
                 city = restaurant.get('city', 'London')
                 ta_url = search_tripadvisor(name, city)
