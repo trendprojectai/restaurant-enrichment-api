@@ -41,12 +41,12 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
 ]
-REQUEST_TIMEOUT = 15  # Increased timeout
-RATE_LIMIT_DELAY = 2  # seconds between requests
+REQUEST_TIMEOUT = 12  # Timeout for requests
+RATE_LIMIT_DELAY = 1  # seconds between requests (reduced)
 MAX_GALLERY_IMAGES = 10
 MIN_IMAGE_SIZE = 200  # minimum width/height to consider
-MAX_RETRIES = 3  # Retry failed requests
-RETRY_DELAY = 2  # Initial retry delay in seconds
+MAX_RETRIES = 2  # Retry failed requests (reduced from 3 to prevent worker timeout)
+RETRY_DELAY = 1  # Initial retry delay in seconds (reduced)
 
 
 class RestaurantEnricher:
@@ -160,14 +160,17 @@ class RestaurantEnricher:
         # Step 2: Detect if this is a sub-page (location/branch page)
         is_subpage = self._is_location_or_branch_page(url)
 
-        # Step 3: If sub-page, also scrape the homepage
-        if is_subpage:
+        # Step 3: If sub-page AND primary page had data, also scrape homepage
+        # Skip homepage if primary page completely failed (saves time on blocked sites)
+        if is_subpage and primary_data:
             logger.info("  ✓ Detected location/branch page - also scraping homepage...")
             homepage_url = self._extract_homepage(url)
             if homepage_url and homepage_url != url:
                 homepage_data = self._scrape_single_page(homepage_url)
                 # Smart merge: primary data takes precedence for contact, homepage for marketing
                 all_data = self._smart_merge(primary_data, homepage_data)
+        elif is_subpage and not primary_data:
+            logger.info("  ⏭ Skipping homepage (primary page failed - site likely blocking)")
 
         # Step 4: If menu URL not found, try common menu paths
         if not all_data.get('menu_url'):
@@ -325,8 +328,8 @@ class RestaurantEnricher:
                     'Cache-Control': 'max-age=0',
                 }
 
-                # Add small random delay to seem more human
-                time.sleep(random.uniform(0.5, 1.5))
+                # Add small random delay to seem more human (reduced to speed up)
+                time.sleep(random.uniform(0.3, 0.8))
 
                 # Cloudscraper automatically handles Cloudflare challenges
                 logger.info(f"  🌐 Fetching {url} (cloudscraper - Cloudflare bypass enabled)")
