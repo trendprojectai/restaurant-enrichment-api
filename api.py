@@ -8,8 +8,8 @@ import json
 
 app = Flask(__name__)
 
-# Simple CORS - allow everything
-CORS(app)
+# Enable CORS - allow all origins
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 @app.route('/', methods=['GET'])
 def home():
