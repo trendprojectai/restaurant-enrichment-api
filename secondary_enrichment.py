@@ -23,6 +23,7 @@ import requests
 import cloudscraper  # Cloudflare bypass
 from bs4 import BeautifulSoup
 from price_parser import Price  # Menu price parsing
+from scrapers.tripadvisor_scraper import search_tripadvisor, scrape_tripadvisor_page
 
 # Disable SSL warnings
 import urllib3
@@ -48,6 +49,22 @@ MAX_GALLERY_IMAGES = 10
 MIN_IMAGE_SIZE = 200  # minimum width/height to consider
 MAX_RETRIES = 2  # Retry failed requests (reduced from 3 to prevent worker timeout)
 RETRY_DELAY = 1  # Initial retry delay in seconds (reduced)
+
+# TripAdvisor fallback configuration
+TRIPADVISOR_FIELDS = [
+    "opening_hours",
+    "cuisine_type",
+    "price_range",
+    "phone"
+]
+
+
+def needs_tripadvisor(enrichment: dict) -> bool:
+    """Check if enrichment data is missing key fields that TripAdvisor can fill."""
+    return any(
+        enrichment.get(field) in (None, [], "")
+        for field in TRIPADVISOR_FIELDS
+    )
 
 
 class RestaurantEnricher:
@@ -124,6 +141,31 @@ class RestaurantEnricher:
                 logger.info(f"✓ Enhanced scraping completed for {name}")
             except Exception as e:
                 logger.warning(f"Failed to scrape website for {name}: {str(e)[:100]}")
+
+        # TripAdvisor fallback for missing data
+        if needs_tripadvisor(enrichment):
+            logger.info(f"  → Missing key fields, trying TripAdvisor fallback...")
+            try:
+                city = restaurant.get('city', 'London')
+                ta_url = search_tripadvisor(name, city)
+
+                if ta_url:
+                    logger.info(f"  ✓ Found on TripAdvisor: {ta_url}")
+                    ta_data = scrape_tripadvisor_page(ta_url)
+
+                    # Fill nulls only - don't overwrite existing data
+                    filled_count = 0
+                    for key, value in ta_data.items():
+                        if enrichment.get(key) in (None, [], "") and value:
+                            enrichment[key] = value
+                            filled_count += 1
+
+                    if filled_count > 0:
+                        logger.info(f"  ✓ Filled {filled_count} fields from TripAdvisor")
+                else:
+                    logger.info(f"  ⚠ Not found on TripAdvisor")
+            except Exception as e:
+                logger.warning(f"TripAdvisor fallback failed: {str(e)[:100]}")
 
         # Rate limiting
         time.sleep(RATE_LIMIT_DELAY)
