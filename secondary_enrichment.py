@@ -34,11 +34,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-REQUEST_TIMEOUT = 10
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+]
+REQUEST_TIMEOUT = 15  # Increased timeout
 RATE_LIMIT_DELAY = 2  # seconds between requests
 MAX_GALLERY_IMAGES = 10
 MIN_IMAGE_SIZE = 200  # minimum width/height to consider
+MAX_RETRIES = 3  # Retry failed requests
+RETRY_DELAY = 2  # Initial retry delay in seconds
 
 
 class RestaurantEnricher:
@@ -46,13 +53,19 @@ class RestaurantEnricher:
 
     def __init__(self):
         self.session = requests.Session()
+        # Start with a random user agent
+        import random
+        self.current_user_agent = random.choice(USER_AGENTS)
+
         # Enhanced headers to avoid anti-bot detection
         self.session.headers.update({
-            'User-Agent': USER_AGENT,
+            'User-Agent': self.current_user_agent,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
             'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
+            'DNT': '1',
+            'Upgrade-Insecure-Requests': '1',
         })
 
     def enrich_restaurant(self, restaurant: Dict[str, Any]) -> Dict[str, Any]:
@@ -184,28 +197,32 @@ class RestaurantEnricher:
         return f"{parsed.scheme}://{parsed.netloc}"
 
     def _find_menu_page(self, base_url: str) -> Optional[str]:
-        """Try to find menu page using common URL patterns."""
-        # Reduced list to avoid timeouts - only check most common paths
-        menu_paths = [
-            '/menu', '/menus', '/food', '/our-menu',
-        ]
-
-        # Maximum time to spend looking for menu (prevent worker timeout)
-        import time
-        start_time = time.time()
-        max_search_time = 8  # 8 seconds max
-
-        for path in menu_paths:
-            # Stop if we've exceeded max search time
-            if time.time() - start_time > max_search_time:
-                logger.debug("  ⏱ Menu search timeout, skipping remaining paths")
-                break
-
-            test_url = base_url.rstrip('/') + path
-            if self._url_exists(test_url):
-                return test_url
-
+        """Try to find menu page using common URL patterns (DISABLED to prevent timeouts)."""
+        # DISABLED: This was causing worker timeouts
+        # Menu URLs will be found from page links instead
+        logger.debug("  ⏭ Skipping menu path probing (relying on page links)")
         return None
+
+        # # Reduced list to avoid timeouts - only check most common paths
+        # menu_paths = [
+        #     '/menu', '/menus',
+        # ]
+        #
+        # # Maximum time to spend looking for menu (prevent worker timeout)
+        # start_time = time.time()
+        # max_search_time = 4  # 4 seconds max
+        #
+        # for path in menu_paths:
+        #     # Stop if we've exceeded max search time
+        #     if time.time() - start_time > max_search_time:
+        #         logger.debug("  ⏱ Menu search timeout, skipping remaining paths")
+        #         break
+        #
+        #     test_url = base_url.rstrip('/') + path
+        #     if self._url_exists(test_url):
+        #         return test_url
+        #
+        # return None
 
     def _url_exists(self, url: str) -> bool:
         """Check if URL exists (returns 200)."""
@@ -263,68 +280,91 @@ class RestaurantEnricher:
     # ============================================================================
 
     def _scrape_single_page(self, url: str) -> Dict[str, Any]:
-        """Scrape a single page and extract all available data."""
-        try:
-            # Enhanced headers to avoid anti-bot detection
-            headers = {
-                'User-Agent': USER_AGENT,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Cache-Control': 'max-age=0',
-            }
+        """Scrape a single page and extract all available data with retry logic."""
+        import random
 
-            response = self.session.get(
-                url,
-                timeout=REQUEST_TIMEOUT,
-                allow_redirects=True,
-                verify=False,  # Skip SSL verification
-                headers=headers
-            )
+        for attempt in range(MAX_RETRIES):
+            try:
+                # Rotate user agent on retries
+                if attempt > 0:
+                    self.current_user_agent = random.choice(USER_AGENTS)
+                    logger.info(f"  🔄 Retry attempt {attempt + 1}/{MAX_RETRIES} with new User-Agent")
+                    time.sleep(RETRY_DELAY * attempt)  # Exponential backoff
 
-            if response.status_code == 403:
-                logger.warning(f"  ⚠ 403 Forbidden (anti-bot protection) for {url}")
+                # Enhanced headers to avoid anti-bot detection
+                headers = {
+                    'User-Agent': self.current_user_agent,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                    'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Connection': 'keep-alive',
+                    'DNT': '1',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Cache-Control': 'max-age=0',
+                }
+
+                # Add small random delay to seem more human
+                time.sleep(random.uniform(0.5, 1.5))
+
+                response = self.session.get(
+                    url,
+                    timeout=REQUEST_TIMEOUT,
+                    allow_redirects=True,
+                    verify=False,  # Skip SSL verification
+                    headers=headers
+                )
+
+                if response.status_code == 403:
+                    logger.warning(f"  ⚠ 403 Forbidden (anti-bot) for {url} - attempt {attempt + 1}/{MAX_RETRIES}")
+                    if attempt < MAX_RETRIES - 1:
+                        continue  # Retry with different user agent
+                    return {}
+
+                elif response.status_code != 200:
+                    logger.warning(f"  ⚠ Got status {response.status_code} for {url}")
+                    if attempt < MAX_RETRIES - 1:
+                        continue  # Retry
+                    return {}
+
+                # Success! Parse the response
+                soup = BeautifulSoup(response.text, 'html.parser')
+                html_text = response.text
+                base_url = response.url
+
+                # Extract all fields with safe wrappers
+                data = {
+                    'phone': self._safe_extract(self._extract_phone_multi, soup, html_text),
+                    'phone_formatted': self._safe_extract(self._extract_phone_formatted, soup, html_text),
+                    'email': self._safe_extract(self._extract_email, soup, html_text),
+                    'opening_hours': self._safe_extract(self._extract_hours, soup, html_text),
+                    'cover_image': self._safe_extract(self._extract_cover_image, soup, base_url),
+                    'cover_image_alt': self._safe_extract(self._extract_cover_image_alt, soup),
+                    'menu_url': self._safe_extract(self._extract_menu_url, soup, base_url),
+                    'menu_pdf_url': self._safe_extract(self._extract_menu_pdf, soup, base_url),
+                    'gallery_images': self._safe_extract(self._extract_gallery_images, soup, base_url) or [],
+                    'instagram_handle': self._safe_extract(self._extract_instagram_handle, soup, html_text),
+                    'instagram_url': self._safe_extract(self._extract_instagram_url, soup, html_text),
+                    'tiktok_handle': self._safe_extract(self._extract_tiktok_handle, soup, html_text),
+                    'tiktok_url': self._safe_extract(self._extract_tiktok_url, soup, html_text),
+                    'tiktok_videos': [],  # Placeholder for future enhancement
+                    'facebook_url': self._safe_extract(self._extract_facebook_url, soup, html_text),
+                    'cuisine_type': self._safe_extract(self._extract_cuisine_type, soup, html_text),
+                    'price_range': self._safe_extract(self._extract_price_range, soup, html_text),
+                }
+
+                # Remove None values and return successfully
+                return {k: v for k, v in data.items() if v}
+
+            except Exception as e:
+                logger.warning(f"  ⚠ Error on attempt {attempt + 1}/{MAX_RETRIES}: {str(e)[:100]}")
+                if attempt < MAX_RETRIES - 1:
+                    continue  # Retry
+                logger.error(f"  ✗ All retries failed for {url}")
                 return {}
-            elif response.status_code != 200:
-                logger.warning(f"  ⚠ Got status {response.status_code} for {url}")
-                return {}
-
-            soup = BeautifulSoup(response.text, 'html.parser')
-            html_text = response.text
-            base_url = response.url
-
-            # Extract all fields with safe wrappers
-            data = {
-                'phone': self._safe_extract(self._extract_phone_multi, soup, html_text),
-                'phone_formatted': self._safe_extract(self._extract_phone_formatted, soup, html_text),
-                'email': self._safe_extract(self._extract_email, soup, html_text),
-                'opening_hours': self._safe_extract(self._extract_hours, soup, html_text),
-                'cover_image': self._safe_extract(self._extract_cover_image, soup, base_url),
-                'cover_image_alt': self._safe_extract(self._extract_cover_image_alt, soup),
-                'menu_url': self._safe_extract(self._extract_menu_url, soup, base_url),
-                'menu_pdf_url': self._safe_extract(self._extract_menu_pdf, soup, base_url),
-                'gallery_images': self._safe_extract(self._extract_gallery_images, soup, base_url) or [],
-                'instagram_handle': self._safe_extract(self._extract_instagram_handle, soup, html_text),
-                'instagram_url': self._safe_extract(self._extract_instagram_url, soup, html_text),
-                'tiktok_handle': self._safe_extract(self._extract_tiktok_handle, soup, html_text),
-                'tiktok_url': self._safe_extract(self._extract_tiktok_url, soup, html_text),
-                'tiktok_videos': [],  # Placeholder for future enhancement
-                'facebook_url': self._safe_extract(self._extract_facebook_url, soup, html_text),
-                'cuisine_type': self._safe_extract(self._extract_cuisine_type, soup, html_text),
-                'price_range': self._safe_extract(self._extract_price_range, soup, html_text),
-            }
-
-            # Remove None values
-            return {k: v for k, v in data.items() if v}
-
-        except Exception as e:
-            logger.error(f"  ✗ Failed to scrape {url}: {str(e)[:100]}")
-            return {}
 
     def _safe_extract(self, func, *args, **kwargs):
         """Safely execute extraction function with error handling."""
