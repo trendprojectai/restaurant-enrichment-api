@@ -46,7 +46,14 @@ class RestaurantEnricher:
 
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({'User-Agent': USER_AGENT})
+        # Enhanced headers to avoid anti-bot detection
+        self.session.headers.update({
+            'User-Agent': USER_AGENT,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+        })
 
     def enrich_restaurant(self, restaurant: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -178,15 +185,22 @@ class RestaurantEnricher:
 
     def _find_menu_page(self, base_url: str) -> Optional[str]:
         """Try to find menu page using common URL patterns."""
+        # Reduced list to avoid timeouts - only check most common paths
         menu_paths = [
-            '/menu', '/menu/', '/menus', '/menus/',
-            '/food', '/food/', '/food-menu', '/food-menu/',
-            '/our-menu', '/our-menu/',
-            '/eat', '/eat/', '/dining', '/dining/',
-            '/food-drink', '/food-drink/',
+            '/menu', '/menus', '/food', '/our-menu',
         ]
 
+        # Maximum time to spend looking for menu (prevent worker timeout)
+        import time
+        start_time = time.time()
+        max_search_time = 8  # 8 seconds max
+
         for path in menu_paths:
+            # Stop if we've exceeded max search time
+            if time.time() - start_time > max_search_time:
+                logger.debug("  ⏱ Menu search timeout, skipping remaining paths")
+                break
+
             test_url = base_url.rstrip('/') + path
             if self._url_exists(test_url):
                 return test_url
@@ -198,10 +212,16 @@ class RestaurantEnricher:
         try:
             response = requests.head(
                 url,
-                timeout=5,
+                timeout=2,  # Reduced from 5 to prevent timeouts
                 verify=False,
                 allow_redirects=True,
-                headers={'User-Agent': USER_AGENT}
+                headers={
+                    'User-Agent': USER_AGENT,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Connection': 'keep-alive',
+                }
             )
             return response.status_code == 200
         except:
@@ -245,14 +265,32 @@ class RestaurantEnricher:
     def _scrape_single_page(self, url: str) -> Dict[str, Any]:
         """Scrape a single page and extract all available data."""
         try:
+            # Enhanced headers to avoid anti-bot detection
+            headers = {
+                'User-Agent': USER_AGENT,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Cache-Control': 'max-age=0',
+            }
+
             response = self.session.get(
                 url,
                 timeout=REQUEST_TIMEOUT,
                 allow_redirects=True,
-                verify=False  # Skip SSL verification
+                verify=False,  # Skip SSL verification
+                headers=headers
             )
 
-            if response.status_code != 200:
+            if response.status_code == 403:
+                logger.warning(f"  ⚠ 403 Forbidden (anti-bot protection) for {url}")
+                return {}
+            elif response.status_code != 200:
                 logger.warning(f"  ⚠ Got status {response.status_code} for {url}")
                 return {}
 
