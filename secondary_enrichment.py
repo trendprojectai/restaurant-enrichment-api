@@ -22,7 +22,6 @@ import logging
 import requests
 import cloudscraper  # Cloudflare bypass
 from bs4 import BeautifulSoup
-import trafilatura  # Smart content extraction
 from price_parser import Price  # Menu price parsing
 
 # Disable SSL warnings
@@ -822,29 +821,10 @@ class RestaurantEnricher:
 
         return None
 
-    # -------- TRAFILATURA HELPER --------
-
-    def _extract_clean_content(self, url: str, html_text: str) -> Optional[str]:
-        """Extract clean, main content using trafilatura."""
-        try:
-            # Trafilatura extracts the main content, removing nav/footer/ads
-            extracted = trafilatura.extract(
-                html_text,
-                include_comments=False,
-                include_tables=True,
-                no_fallback=False,
-                favor_recall=True,
-                url=url
-            )
-            return extracted
-        except Exception as e:
-            logger.debug(f"Trafilatura extraction failed: {str(e)[:50]}")
-            return None
-
     # -------- CUISINE & PRICE EXTRACTION --------
 
     def _extract_cuisine_type(self, soup: BeautifulSoup, html_text: str) -> Optional[str]:
-        """ENHANCED: Extract cuisine type with trafilatura fallback."""
+        """ENHANCED: Extract cuisine type with multiple strategies."""
 
         # Strategy 1: Schema.org
         schema_cuisine = soup.find(itemprop='servesCuisine')
@@ -891,14 +871,6 @@ class RestaurantEnricher:
             best_cuisine = max(scores.items(), key=lambda x: x[1])
             if best_cuisine[1] >= 2:  # At least 2 keywords
                 return best_cuisine[0]
-
-        # Strategy 4: Trafilatura clean content (removes noise)
-        clean_content = self._extract_clean_content(None, html_text)
-        if clean_content:
-            content_lower = clean_content.lower()
-            for cuisine, keywords in cuisines_keywords.items():
-                if any(keyword in content_lower for keyword in keywords[:3]):  # Check top 3 keywords
-                    return cuisine
 
         return None
 
