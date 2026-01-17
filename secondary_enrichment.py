@@ -492,9 +492,35 @@ class RestaurantEnricher:
     # -------- OPENING HOURS EXTRACTION --------
 
     def _extract_hours(self, soup: BeautifulSoup, html_text: str) -> Optional[List[str]]:
-        """Extract opening hours."""
+        """SUPER ENHANCED: Extract opening hours with comprehensive pattern matching."""
 
-        # Strategy 1: Schema.org structured data
+        # Strategy 1: Schema.org structured data (JSON-LD)
+        try:
+            scripts = soup.find_all('script', type='application/ld+json')
+            for script in scripts:
+                if script.string:
+                    data = json.loads(script.string)
+                    if isinstance(data, list):
+                        for item in data:
+                            if isinstance(item, dict) and 'openingHoursSpecification' in item:
+                                hours = self._parse_opening_hours_spec(item['openingHoursSpecification'])
+                                if hours:
+                                    return hours
+                    elif isinstance(data, dict):
+                        if 'openingHoursSpecification' in data:
+                            hours = self._parse_opening_hours_spec(data['openingHoursSpecification'])
+                            if hours:
+                                return hours
+                        if 'openingHours' in data:
+                            hours_data = data['openingHours']
+                            if isinstance(hours_data, list):
+                                return hours_data
+                            elif isinstance(hours_data, str):
+                                return [hours_data]
+        except:
+            pass
+
+        # Strategy 2: Schema.org itemprop in HTML
         hours_schema = soup.find_all(itemprop='openingHours')
         if hours_schema:
             hours = []
@@ -505,23 +531,99 @@ class RestaurantEnricher:
             if hours:
                 return hours
 
-        # Strategy 2: Look for day-time patterns in text
-        day_pattern = r'(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)[\s:]+(\d{1,2}:\d{2}\s?(?:am|pm)?.*?\d{1,2}:\d{2}\s?(?:am|pm)?)'
-        matches = re.findall(day_pattern, html_text, re.IGNORECASE)
-        if matches:
-            hours = [f"{day}: {time_range}" for day, time_range in matches[:7]]  # Limit to 7 days
-            return hours
+        # Strategy 3: Common class/id patterns for hours sections
+        hour_selectors = [
+            # Class patterns
+            '[class*="opening"]', '[class*="hours"]', '[class*="schedule"]',
+            '[class*="time"]', '[class*="when-open"]',
+            # ID patterns
+            '[id*="opening"]', '[id*="hours"]', '[id*="schedule"]',
+            # Data attributes
+            '[data-hours]', '[data-opening]',
+        ]
 
-        # Strategy 3: Look for hours in common class names
-        hours_elements = soup.find_all(class_=re.compile(r'(hours|opening|schedule)', re.I))
-        for elem in hours_elements:
-            text = elem.get_text(strip=True)
-            if any(day in text for day in ['Monday', 'Tuesday', 'Wednesday']):
-                # Found a section with hours
-                lines = text.split('\n')
-                return [line.strip() for line in lines if line.strip()]
+        for selector in hour_selectors:
+            elements = soup.select(selector)
+            for elem in elements:
+                text = elem.get_text(strip=True)
+                # Check if contains day names
+                if any(day in text for day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']):
+                    # Parse the text for hours
+                    parsed_hours = self._parse_hours_from_text(text)
+                    if parsed_hours and len(parsed_hours) >= 3:  # At least 3 days
+                        return parsed_hours
+
+        # Strategy 4: Look for "Opening Hours" heading + following content
+        headings = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'b'])
+        for heading in headings:
+            heading_text = heading.get_text(strip=True).lower()
+            if any(keyword in heading_text for keyword in ['opening', 'hours', 'opening hours', 'opening times', 'when we', "we're open"]):
+                # Get next siblings or parent's text
+                parent = heading.find_parent(['div', 'section', 'article'])
+                if parent:
+                    text = parent.get_text()
+                    parsed_hours = self._parse_hours_from_text(text)
+                    if parsed_hours and len(parsed_hours) >= 3:
+                        return parsed_hours
+
+        # Strategy 5: Regex patterns for day-time combinations in full text
+        parsed_hours = self._parse_hours_from_text(html_text)
+        if parsed_hours and len(parsed_hours) >= 3:
+            return parsed_hours
 
         return None
+
+    def _parse_opening_hours_spec(self, spec):
+        """Parse Schema.org openingHoursSpecification."""
+        if not spec:
+            return None
+
+        hours = []
+        if isinstance(spec, list):
+            for item in spec:
+                day = item.get('dayOfWeek', '')
+                opens = item.get('opens', '')
+                closes = item.get('closes', '')
+                if day and opens and closes:
+                    day_name = day.split('/')[-1] if '/' in day else day
+                    hours.append(f"{day_name}: {opens} - {closes}")
+        return hours if hours else None
+
+    def _parse_hours_from_text(self, text: str) -> Optional[List[str]]:
+        """Parse opening hours from plain text using multiple patterns."""
+        hours = []
+
+        # Pattern 1: "Monday: 10:00 AM - 11:00 PM" or "Monday 10:00-23:00"
+        pattern1 = r'(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[\s:,]+(\d{1,2}(?::\d{2})?\s?(?:am|pm|AM|PM)?)\s?[-–—to]+\s?(\d{1,2}(?::\d{2})?\s?(?:am|pm|AM|PM)?)'
+        matches1 = re.findall(pattern1, text, re.IGNORECASE)
+        for match in matches1:
+            day, open_time, close_time = match
+            hours.append(f"{day}: {open_time} - {close_time}")
+
+        # Pattern 2: "Mon-Fri 9am-5pm" or "Monday - Friday: 10:00 - 22:00"
+        pattern2 = r'(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s?[-–to]+\s?(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[\s:,]+(\d{1,2}(?::\d{2})?\s?(?:am|pm|AM|PM)?)\s?[-–—to]+\s?(\d{1,2}(?::\d{2})?\s?(?:am|pm|AM|PM)?)'
+        matches2 = re.findall(pattern2, text, re.IGNORECASE)
+        for match in matches2:
+            day1, day2, open_time, close_time = match
+            hours.append(f"{day1}-{day2}: {open_time} - {close_time}")
+
+        # Pattern 3: "Open Mon-Sun 11am-11pm" or variations
+        pattern3 = r'(?:open|hours)[\s:]+([A-Za-z]{3})\s?[-–]\s?([A-Za-z]{3})\s+(\d{1,2}(?::\d{2})?\s?(?:am|pm)?)\s?[-–]\s?(\d{1,2}(?::\d{2})?\s?(?:am|pm)?)'
+        matches3 = re.findall(pattern3, text, re.IGNORECASE)
+        for match in matches3:
+            day1, day2, open_time, close_time = match
+            hours.append(f"{day1}-{day2}: {open_time} - {close_time}")
+
+        # Remove duplicates while preserving order
+        unique_hours = []
+        seen = set()
+        for h in hours:
+            h_clean = h.lower().replace(' ', '')
+            if h_clean not in seen:
+                unique_hours.append(h)
+                seen.add(h_clean)
+
+        return unique_hours[:7] if unique_hours else None  # Limit to 7 days
 
     # -------- IMAGE EXTRACTION --------
 
