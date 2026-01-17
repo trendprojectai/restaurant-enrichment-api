@@ -20,6 +20,7 @@ from urllib.parse import urljoin, urlparse
 import logging
 
 import requests
+import cloudscraper  # Cloudflare bypass
 from bs4 import BeautifulSoup
 
 # Disable SSL warnings
@@ -52,10 +53,18 @@ class RestaurantEnricher:
     """SUPER ENHANCED: Multi-page intelligent restaurant data enricher."""
 
     def __init__(self):
-        self.session = requests.Session()
-        # Start with a random user agent
+        # Use cloudscraper instead of requests to bypass Cloudflare
         import random
         self.current_user_agent = random.choice(USER_AGENTS)
+
+        # Create cloudscraper session with browser settings
+        self.session = cloudscraper.create_scraper(
+            browser={
+                'browser': 'chrome',
+                'platform': 'windows',
+                'desktop': True
+            }
+        )
 
         # Enhanced headers to avoid anti-bot detection
         self.session.headers.update({
@@ -280,7 +289,7 @@ class RestaurantEnricher:
     # ============================================================================
 
     def _scrape_single_page(self, url: str) -> Dict[str, Any]:
-        """Scrape a single page and extract all available data with retry logic."""
+        """Scrape a single page and extract all available data with retry logic + Cloudflare bypass."""
         import random
 
         for attempt in range(MAX_RETRIES):
@@ -290,6 +299,15 @@ class RestaurantEnricher:
                     self.current_user_agent = random.choice(USER_AGENTS)
                     logger.info(f"  🔄 Retry attempt {attempt + 1}/{MAX_RETRIES} with new User-Agent")
                     time.sleep(RETRY_DELAY * attempt)  # Exponential backoff
+
+                    # Recreate scraper with new browser signature on retry
+                    self.session = cloudscraper.create_scraper(
+                        browser={
+                            'browser': 'chrome',
+                            'platform': 'windows',
+                            'desktop': True
+                        }
+                    )
 
                 # Enhanced headers to avoid anti-bot detection
                 headers = {
@@ -310,18 +328,20 @@ class RestaurantEnricher:
                 # Add small random delay to seem more human
                 time.sleep(random.uniform(0.5, 1.5))
 
+                # Cloudscraper automatically handles Cloudflare challenges
+                logger.info(f"  🌐 Fetching {url} (cloudscraper - Cloudflare bypass enabled)")
                 response = self.session.get(
                     url,
                     timeout=REQUEST_TIMEOUT,
                     allow_redirects=True,
-                    verify=False,  # Skip SSL verification
                     headers=headers
                 )
 
                 if response.status_code == 403:
-                    logger.warning(f"  ⚠ 403 Forbidden (anti-bot) for {url} - attempt {attempt + 1}/{MAX_RETRIES}")
+                    logger.warning(f"  ⚠ 403 Forbidden for {url} - attempt {attempt + 1}/{MAX_RETRIES}")
                     if attempt < MAX_RETRIES - 1:
                         continue  # Retry with different user agent
+                    logger.error(f"  ✗ Cloudflare blocking persists after {MAX_RETRIES} attempts")
                     return {}
 
                 elif response.status_code != 200:
@@ -357,7 +377,31 @@ class RestaurantEnricher:
                 }
 
                 # Remove None values and return successfully
+                logger.info(f"  ✅ Successfully scraped {url}")
                 return {k: v for k, v in data.items() if v}
+
+            except cloudscraper.exceptions.CloudflareChallengeError as e:
+                logger.warning(f"  ⚠ Cloudflare challenge failed on attempt {attempt + 1}/{MAX_RETRIES}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(3)  # Wait longer before retry
+                    continue
+                logger.error(f"  ✗ Could not bypass Cloudflare for {url}")
+                return {}
+
+            except requests.exceptions.Timeout:
+                logger.warning(f"  ⏱ Timeout on attempt {attempt + 1}/{MAX_RETRIES} for {url}")
+                if attempt < MAX_RETRIES - 1:
+                    continue
+                logger.error(f"  ✗ Timeout after {MAX_RETRIES} attempts")
+                return {}
+
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"  ⚠ Connection error on attempt {attempt + 1}/{MAX_RETRIES}: {str(e)[:50]}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(2)
+                    continue
+                logger.error(f"  ✗ Connection failed after {MAX_RETRIES} attempts")
+                return {}
 
             except Exception as e:
                 logger.warning(f"  ⚠ Error on attempt {attempt + 1}/{MAX_RETRIES}: {str(e)[:100]}")
