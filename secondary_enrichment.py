@@ -23,6 +23,7 @@ import requests
 import cloudscraper  # Cloudflare bypass
 from bs4 import BeautifulSoup
 from price_parser import Price  # Menu price parsing
+from requests_html import HTMLSession  # JavaScript rendering fallback
 
 # Disable SSL warnings
 import urllib3
@@ -289,6 +290,59 @@ class RestaurantEnricher:
         return merged
 
     # ============================================================================
+    # JAVASCRIPT RENDERING FALLBACK
+    # ============================================================================
+
+    def _scrape_with_js_rendering(self, url: str) -> Dict[str, Any]:
+        """
+        Fallback scraper using JavaScript rendering for heavily-protected or JS-heavy sites.
+        Uses requests-html which can execute JavaScript to load dynamic content.
+        """
+        logger.info(f"  🎭 Trying JavaScript rendering for {url}...")
+        try:
+            session = HTMLSession()
+            response = session.get(url, timeout=20)
+
+            # Render JavaScript (this downloads and executes JS, loads dynamic content)
+            logger.info(f"  ⚙️  Rendering JavaScript... (may take 10-15 seconds)")
+            response.html.render(timeout=20, keep_page=True, sleep=3)
+
+            # Get the rendered HTML
+            html_text = response.html.html
+            soup = BeautifulSoup(html_text, 'html.parser')
+            base_url = response.url
+
+            logger.info(f"  ✓ JavaScript rendered successfully! Got {len(html_text)} chars")
+
+            # Extract all fields with safe wrappers
+            data = {
+                'phone': self._safe_extract(self._extract_phone_multi, soup, html_text),
+                'phone_formatted': self._safe_extract(self._extract_phone_formatted, soup, html_text),
+                'email': self._safe_extract(self._extract_email, soup, html_text),
+                'opening_hours': self._safe_extract(self._extract_hours, soup, html_text),
+                'cover_image': self._safe_extract(self._extract_cover_image, soup, base_url),
+                'cover_image_alt': self._safe_extract(self._extract_cover_image_alt, soup),
+                'menu_url': self._safe_extract(self._extract_menu_url, soup, base_url),
+                'menu_pdf_url': self._safe_extract(self._extract_menu_pdf, soup, base_url),
+                'gallery_images': self._safe_extract(self._extract_gallery_images, soup, base_url) or [],
+                'instagram_handle': self._safe_extract(self._extract_instagram_handle, soup, html_text),
+                'instagram_url': self._safe_extract(self._extract_instagram_url, soup, html_text),
+                'tiktok_handle': self._safe_extract(self._extract_tiktok_handle, soup, html_text),
+                'tiktok_url': self._safe_extract(self._extract_tiktok_url, soup, html_text),
+                'tiktok_videos': self._safe_extract(self._extract_tiktok_videos, soup, html_text) or [],
+                'facebook_url': self._safe_extract(self._extract_facebook, soup, html_text),
+                'cuisine_type': self._safe_extract(self._extract_cuisine_type, soup, html_text),
+                'price_range': self._safe_extract(self._extract_price_range, soup, html_text),
+            }
+
+            session.close()
+            return data
+
+        except Exception as e:
+            logger.error(f"  ✗ JavaScript rendering failed: {str(e)[:100]}")
+            return {}
+
+    # ============================================================================
     # SINGLE PAGE SCRAPER
     # ============================================================================
 
@@ -345,8 +399,8 @@ class RestaurantEnricher:
                     logger.warning(f"  ⚠ 403 Forbidden for {url} - attempt {attempt + 1}/{MAX_RETRIES}")
                     if attempt < MAX_RETRIES - 1:
                         continue  # Retry with different user agent
-                    logger.error(f"  ✗ Cloudflare blocking persists after {MAX_RETRIES} attempts")
-                    return {}
+                    logger.warning(f"  ⚠ Blocked after {MAX_RETRIES} attempts - trying JS rendering fallback")
+                    return self._scrape_with_js_rendering(url)
 
                 elif response.status_code != 200:
                     logger.warning(f"  ⚠ Got status {response.status_code} for {url}")
