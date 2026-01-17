@@ -70,10 +70,11 @@ def needs_tripadvisor(enrichment: dict) -> bool:
 class RestaurantEnricher:
     """SUPER ENHANCED: Multi-page intelligent restaurant data enricher."""
 
-    def __init__(self):
+    def __init__(self, enable_tripadvisor=True):
         # Use cloudscraper instead of requests to bypass Cloudflare
         import random
         self.current_user_agent = random.choice(USER_AGENTS)
+        self.enable_tripadvisor = enable_tripadvisor
 
         # Create cloudscraper session with browser settings
         self.session = cloudscraper.create_scraper(
@@ -142,8 +143,8 @@ class RestaurantEnricher:
             except Exception as e:
                 logger.warning(f"Failed to scrape website for {name}: {str(e)[:100]}")
 
-        # TripAdvisor fallback for missing data
-        if needs_tripadvisor(enrichment):
+        # TripAdvisor fallback for missing data (only if enabled)
+        if self.enable_tripadvisor and needs_tripadvisor(enrichment):
             missing = [
                 f for f in TRIPADVISOR_FIELDS
                 if enrichment.get(f) in (None, [], "")
