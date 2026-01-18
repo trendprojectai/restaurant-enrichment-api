@@ -135,6 +135,9 @@ class RestaurantEnricher:
             'tripadvisor_url': None,
             'tripadvisor_status': None,
             'tertiary_updates': None,
+            'tripadvisor_confidence': None,
+            'tripadvisor_distance_m': None,
+            'tripadvisor_match_notes': None,
         }
 
         # Try multi-page scraping
