@@ -513,29 +513,51 @@ def enrich_tertiary():
         return '', 200
 
     try:
+        print("\n" + "="*80)
+        print("🔍 TERTIARY ENRICHMENT REQUEST RECEIVED")
+        print("="*80)
+
         # CRITICAL: Require tertiary_snapshot_id in request body
         data = request.get_json()
         if not data or 'tertiary_snapshot_id' not in data:
+            print("❌ ERROR: Missing tertiary_snapshot_id in request body")
+            print("="*80 + "\n")
             return jsonify({
                 'error': 'Tertiary snapshot not created yet. Call /tertiary/snapshot first',
-                'details': 'Missing tertiary_snapshot_id in request body'
+                'details': 'Missing tertiary_snapshot_id in request body',
+                'action': 'CREATE_SNAPSHOT'
             }), 400
 
         snapshot_id = data['tertiary_snapshot_id']
+        print(f"✓ Snapshot ID received: {snapshot_id}")
 
         # Validate snapshot_id exists
         if snapshot_id not in tertiary_snapshots:
+            print(f"❌ SNAPSHOT NOT FOUND")
+            print(f"   Requested ID: {snapshot_id}")
+            print(f"   Available snapshots: {len(tertiary_snapshots)}")
+            if tertiary_snapshots:
+                print(f"   Available IDs: {list(tertiary_snapshots.keys())[:3]}...")
+            print("="*80 + "\n")
             return jsonify({
-                'error': f'Snapshot ID {snapshot_id} not found',
-                'details': 'Invalid or expired tertiary_snapshot_id. Call /tertiary/snapshot to create a new snapshot.'
+                'error': 'Snapshot not found',
+                'details': 'Invalid or expired tertiary_snapshot_id. Call /tertiary/snapshot to create a new snapshot.',
+                'action': 'RECREATE_SNAPSHOT'
             }), 404
 
         # Get the snapshot data
         snapshot_obj = tertiary_snapshots[snapshot_id]
         snapshot_data = snapshot_obj['data']
 
+        print(f"✅ SNAPSHOT ACCESSED")
+        print(f"   Snapshot ID: {snapshot_id}")
+        print(f"   Row count: {len(snapshot_data)}")
+        print(f"   Hash: {snapshot_obj.get('hash', 'N/A')[:12]}...")
+
         # Validate snapshot is not empty
         if len(snapshot_data) == 0:
+            print(f"⚠️  WARNING: Snapshot is empty (0 restaurants)")
+            print("="*80 + "\n")
             return jsonify({
                 'error': 'Snapshot exists but is empty',
                 'details': 'The snapshot contains 0 restaurants. No TripAdvisor enrichment needed.',
@@ -543,7 +565,8 @@ def enrich_tertiary():
                 'count': 0
             }), 400
 
-        print(f"Running TripAdvisor enrichment on snapshot {snapshot_id} ({len(snapshot_data)} restaurants)...")
+        print(f"🚀 Starting TripAdvisor enrichment for {len(snapshot_data)} restaurants...")
+        print("="*80 + "\n")
 
         # Import TripAdvisor scraper
         from scrapers.tripadvisor_scraper import search_tripadvisor_validated, scrape_tripadvisor_page
