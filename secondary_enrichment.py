@@ -132,6 +132,9 @@ class RestaurantEnricher:
             'opening_hours': None,
             'cuisine_type': None,
             'price_range': None,
+            'tripadvisor_url': None,
+            'tripadvisor_status': None,
+            'tertiary_updates': None,
         }
 
         # Try multi-page scraping
