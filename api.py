@@ -603,8 +603,11 @@ def enrich_tertiary():
                     longitude=longitude
                 )
 
-                if ta_result['status'] == 'found':
-                    print(f"  ✓ Found on TripAdvisor: {ta_result['url']}")
+                if ta_result['status'] in ('found', 'weak_match'):
+                    # Handle both strong matches and weak matches
+                    status_emoji = "✓" if ta_result['status'] == 'found' else "⚠"
+                    status_label = "Found" if ta_result['status'] == 'found' else "Weak match"
+                    print(f"  {status_emoji} {status_label} on TripAdvisor: {ta_result['url']}")
                     print(f"    Confidence: {ta_result['confidence']}, Distance: {ta_result['distance_m']}m")
 
                     # Scrape the validated page
@@ -617,7 +620,7 @@ def enrich_tertiary():
                     result = {
                         'google_place_id': google_place_id,
                         'tripadvisor_url': ta_result['url'],
-                        'tripadvisor_status': 'found',
+                        'tripadvisor_status': ta_result['status'],  # 'found' or 'weak_match'
                         'tripadvisor_confidence': ta_result['confidence'],
                         'tripadvisor_distance_m': ta_result['distance_m'],
                         'tripadvisor_match_notes': ta_result['match_notes'],
