@@ -112,9 +112,20 @@ class RestaurantEnricher:
 
         logger.info(f"Processing: {name} ({google_place_id})")
 
-        # Initialize enrichment with all fields
+        # Initialize enrichment with ALL fields from canonical schema
+        # This ensures input fields are preserved through the pipeline
         enrichment = {
+            # Core identifiers (preserve from input)
             'google_place_id': google_place_id,
+            'name': restaurant.get('name'),
+            'website': restaurant.get('website'),
+            'address': restaurant.get('address'),
+            'city': restaurant.get('city'),
+            'area': restaurant.get('area'),
+            'latitude': restaurant.get('latitude'),
+            'longitude': restaurant.get('longitude'),
+
+            # Secondary enrichment fields (to be filled)
             'cover_image': None,
             'cover_image_alt': None,
             'menu_url': None,
@@ -132,12 +143,14 @@ class RestaurantEnricher:
             'opening_hours': None,
             'cuisine_type': None,
             'price_range': None,
+
+            # Tertiary (TripAdvisor) fields (initialized as None)
             'tripadvisor_url': None,
             'tripadvisor_status': None,
-            'tertiary_updates': None,
             'tripadvisor_confidence': None,
             'tripadvisor_distance_m': None,
             'tripadvisor_match_notes': None,
+            'tertiary_updates': None,
         }
 
         # Try multi-page scraping

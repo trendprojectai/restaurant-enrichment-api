@@ -21,18 +21,62 @@ secondary_dataset = []  # Store secondary results for merging
 final_csv_path = None  # Path to the persisted final CSV file
 
 # CANONICAL CSV SCHEMA - used by ALL CSV writers in the pipeline
-# This prevents schema mismatches and ensures all stages use the same fields
+# This is the SINGLE source of truth for ALL CSV operations
+# Includes input fields, enrichment fields, and tracking fields
 CSV_FIELDNAMES = [
-    'google_place_id', 'cover_image', 'cover_image_alt',
-    'menu_url', 'menu_pdf_url', 'gallery_images',
-    'phone', 'phone_formatted', 'email',
-    'instagram_handle', 'instagram_url',
-    'tiktok_handle', 'tiktok_url', 'tiktok_videos',
-    'facebook_url', 'opening_hours',
-    'cuisine_type', 'price_range',
-    'tripadvisor_url', 'tripadvisor_status', 'tertiary_updates',
-    'tripadvisor_confidence', 'tripadvisor_distance_m', 'tripadvisor_match_notes'
+    # Core identifiers (input fields)
+    'google_place_id',
+    'name',
+    'website',
+    'address',
+    'city',
+    'area',
+    'latitude',
+    'longitude',
+
+    # Secondary enrichment fields
+    'cover_image',
+    'cover_image_alt',
+    'menu_url',
+    'menu_pdf_url',
+    'gallery_images',
+    'phone',
+    'phone_formatted',
+    'email',
+    'instagram_handle',
+    'instagram_url',
+    'tiktok_handle',
+    'tiktok_url',
+    'tiktok_videos',
+    'facebook_url',
+    'opening_hours',
+    'cuisine_type',
+    'price_range',
+
+    # Tertiary (TripAdvisor) enrichment fields
+    'tripadvisor_url',
+    'tripadvisor_status',
+    'tripadvisor_confidence',
+    'tripadvisor_distance_m',
+    'tripadvisor_match_notes',
+    'tertiary_updates',
 ]
+
+
+def ensure_csv_compatibility(row: dict) -> dict:
+    """
+    Ensure backward compatibility when reading CSVs.
+    Adds missing fields with None defaults for old CSVs that predate schema changes.
+
+    Args:
+        row: Dict from CSV reader
+
+    Returns:
+        Dict with all CSV_FIELDNAMES guaranteed to exist
+    """
+    for field in CSV_FIELDNAMES:
+        row.setdefault(field, None)
+    return row
 
 
 def merge_enriched_results(base_dataset, fallback_results):
@@ -203,10 +247,10 @@ def enrich():
         # Run enrichment using the existing script (TripAdvisor disabled for secondary stage)
         enricher = RestaurantEnricher(enable_tripadvisor=False)
 
-        # Read input CSV
+        # Read input CSV with backward compatibility
         with open(temp_input_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            restaurants = list(reader)
+            restaurants = [ensure_csv_compatibility(row) for row in reader]
 
         print(f"Processing {len(restaurants)} restaurants (secondary enrichment only)...")
         
@@ -219,8 +263,19 @@ def enrich():
                 enriched_data.append(enrichment)
             except Exception as e:
                 print(f"Error enriching {restaurant.get('name', 'Unknown')}: {e}")
-                enriched_data.append({
+                # Create fallback record with input fields preserved
+                fallback_record = {
+                    # Preserve input fields
                     'google_place_id': restaurant.get('google_place_id', ''),
+                    'name': restaurant.get('name'),
+                    'website': restaurant.get('website'),
+                    'address': restaurant.get('address'),
+                    'city': restaurant.get('city'),
+                    'area': restaurant.get('area'),
+                    'latitude': restaurant.get('latitude'),
+                    'longitude': restaurant.get('longitude'),
+
+                    # All enrichment fields as None
                     'cover_image': None,
                     'cover_image_alt': None,
                     'menu_url': None,
@@ -240,11 +295,12 @@ def enrich():
                     'price_range': None,
                     'tripadvisor_url': None,
                     'tripadvisor_status': None,
-                    'tertiary_updates': None,
                     'tripadvisor_confidence': None,
                     'tripadvisor_distance_m': None,
                     'tripadvisor_match_notes': None,
-                })
+                    'tertiary_updates': None,
+                }
+                enriched_data.append(fallback_record)
         
         # Write output CSV using canonical schema
         with open(temp_output_path, 'w', encoding='utf-8', newline='') as f:
