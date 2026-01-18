@@ -61,6 +61,9 @@ def merge_enriched_results(base_dataset, fallback_results):
             record['tripadvisor_url'] = fallback.get('tripadvisor_url')
             record['tripadvisor_status'] = fallback.get('tripadvisor_status')
             record['tertiary_updates'] = fallback.get('tertiary_updates')
+            record['tripadvisor_confidence'] = fallback.get('tripadvisor_confidence')
+            record['tripadvisor_distance_m'] = fallback.get('tripadvisor_distance_m')
+            record['tripadvisor_match_notes'] = fallback.get('tripadvisor_match_notes')
 
         merged.append(record)
 
@@ -92,7 +95,8 @@ def write_final_csv(dataset):
             'tiktok_handle', 'tiktok_url', 'tiktok_videos',
             'facebook_url', 'opening_hours',
             'cuisine_type', 'price_range',
-            'tripadvisor_url', 'tripadvisor_status', 'tertiary_updates'
+            'tripadvisor_url', 'tripadvisor_status', 'tertiary_updates',
+            'tripadvisor_confidence', 'tripadvisor_distance_m', 'tripadvisor_match_notes'
         ]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -129,6 +133,9 @@ def create_tertiary_snapshot(secondary_data):
                 "google_place_id": r.get("google_place_id"),
                 "name": r.get("name"),
                 "city": r.get("city"),
+                "area": r.get("area"),
+                "latitude": r.get("latitude"),
+                "longitude": r.get("longitude"),
                 "website": r.get("website"),
                 # Store existing values to preserve them during merge
                 "existing_opening_hours": r.get("opening_hours"),
@@ -228,6 +235,9 @@ def enrich():
                     'tripadvisor_url': None,
                     'tripadvisor_status': None,
                     'tertiary_updates': None,
+                    'tripadvisor_confidence': None,
+                    'tripadvisor_distance_m': None,
+                    'tripadvisor_match_notes': None,
                 })
         
         # Write output CSV
@@ -350,7 +360,7 @@ def enrich_tertiary():
         print(f"Running TripAdvisor enrichment on {len(tertiary_snapshot)} restaurants...")
 
         # Import TripAdvisor scraper
-        from scrapers.tripadvisor_scraper import search_tripadvisor, scrape_tripadvisor_page
+        from scrapers.tripadvisor_scraper import search_tripadvisor_validated, scrape_tripadvisor_page
 
         enriched_data = []
 
@@ -358,16 +368,38 @@ def enrich_tertiary():
             try:
                 name = restaurant.get('name', 'Unknown')
                 city = restaurant.get('city', 'London')
+                area = restaurant.get('area')
+                latitude = restaurant.get('latitude')
+                longitude = restaurant.get('longitude')
                 google_place_id = restaurant.get('google_place_id', '')
+
+                # Convert lat/lng to float if they're strings
+                try:
+                    if latitude is not None and not isinstance(latitude, float):
+                        latitude = float(latitude)
+                    if longitude is not None and not isinstance(longitude, float):
+                        longitude = float(longitude)
+                except (ValueError, TypeError):
+                    latitude = None
+                    longitude = None
 
                 print(f"TripAdvisor enriching {i+1}/{len(tertiary_snapshot)}: {name}")
 
-                # Search TripAdvisor
-                ta_url = search_tripadvisor(name, city)
+                # Search TripAdvisor with validation
+                ta_result = search_tripadvisor_validated(
+                    name=name,
+                    city=city,
+                    area=area,
+                    latitude=latitude,
+                    longitude=longitude
+                )
 
-                if ta_url:
-                    print(f"  ✓ Found on TripAdvisor: {ta_url}")
-                    ta_data = scrape_tripadvisor_page(ta_url)
+                if ta_result['status'] == 'found':
+                    print(f"  ✓ Found on TripAdvisor: {ta_result['url']}")
+                    print(f"    Confidence: {ta_result['confidence']}, Distance: {ta_result['distance_m']}m")
+
+                    # Scrape the validated page
+                    ta_data = scrape_tripadvisor_page(ta_result['url'])
 
                     # Track which fields were updated
                     updates = {}
@@ -375,8 +407,11 @@ def enrich_tertiary():
                     # Merge with existing data (fill nulls only) and track updates
                     result = {
                         'google_place_id': google_place_id,
-                        'tripadvisor_url': ta_url,
+                        'tripadvisor_url': ta_result['url'],
                         'tripadvisor_status': 'found',
+                        'tripadvisor_confidence': ta_result['confidence'],
+                        'tripadvisor_distance_m': ta_result['distance_m'],
+                        'tripadvisor_match_notes': ta_result['match_notes'],
                     }
 
                     # Opening hours
@@ -412,7 +447,7 @@ def enrich_tertiary():
 
                     enriched_data.append(result)
                 else:
-                    print(f"  ⚠ Not found on TripAdvisor")
+                    print(f"  ⚠ Not found on TripAdvisor: {ta_result['match_notes']}")
                     # Return existing data with not_found status
                     enriched_data.append({
                         'google_place_id': google_place_id,
@@ -423,10 +458,15 @@ def enrich_tertiary():
                         'tripadvisor_url': None,
                         'tripadvisor_status': 'not_found',
                         'tertiary_updates': None,
+                        'tripadvisor_confidence': None,
+                        'tripadvisor_distance_m': None,
+                        'tripadvisor_match_notes': ta_result['match_notes'],
                     })
 
             except Exception as e:
                 print(f"Error enriching {restaurant.get('name', 'Unknown')}: {e}")
+                import traceback
+                traceback.print_exc()
                 # Return existing data on error with error status
                 enriched_data.append({
                     'google_place_id': restaurant.get('google_place_id', ''),
@@ -437,6 +477,9 @@ def enrich_tertiary():
                     'tripadvisor_url': None,
                     'tripadvisor_status': 'error',
                     'tertiary_updates': None,
+                    'tripadvisor_confidence': None,
+                    'tripadvisor_distance_m': None,
+                    'tripadvisor_match_notes': f'Error: {str(e)[:100]}',
                 })
 
         print(f"✓ Completed TripAdvisor enrichment for {len(enriched_data)} restaurants")
@@ -538,7 +581,8 @@ def push_to_export():
             'tiktok_handle', 'tiktok_url', 'tiktok_videos',
             'facebook_url', 'opening_hours',
             'cuisine_type', 'price_range',
-            'tripadvisor_url', 'tripadvisor_status', 'tertiary_updates'
+            'tripadvisor_url', 'tripadvisor_status', 'tertiary_updates',
+            'tripadvisor_confidence', 'tripadvisor_distance_m', 'tripadvisor_match_notes'
         ]
 
         writer = csv.DictWriter(output, fieldnames=fieldnames)
