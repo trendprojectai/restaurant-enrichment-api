@@ -364,25 +364,37 @@ def create_snapshot():
         return '', 200
 
     try:
+        print("\n" + "="*80)
+        print("📸 TERTIARY SNAPSHOT REQUEST RECEIVED")
+        print("="*80)
+
         # Get request data
         request_data = request.get_json()
         if not request_data:
-            return jsonify({'error': 'Missing request body'}), 400
+            print("❌ ERROR: Missing request body")
+            return jsonify({
+                'error': 'Missing request body',
+                'status': 'error'
+            }), 400
 
         # FLEXIBLE PAYLOAD HANDLING: Accept multiple field names
         secondary_data = None
+        payload_format = None
 
         # Option 1: secondary_data field (original format)
         if 'secondary_data' in request_data:
             secondary_data = request_data['secondary_data']
+            payload_format = "secondary_data"
 
         # Option 2: data field (common alternative)
         elif 'data' in request_data:
             secondary_data = request_data['data']
+            payload_format = "data"
 
         # Option 3: csv_data field (CSV string format)
         elif 'csv_data' in request_data:
             csv_data = request_data['csv_data']
+            payload_format = "csv_data"
             # Parse CSV string into array of dicts
             import io
             csv_reader = csv.DictReader(io.StringIO(csv_data))
@@ -391,41 +403,56 @@ def create_snapshot():
         # Option 4: rows + fieldnames format
         elif 'rows' in request_data and 'fieldnames' in request_data:
             rows = request_data['rows']
+            payload_format = "rows+fieldnames"
             # Rows are already dicts, ensure compatibility
             secondary_data = [ensure_csv_compatibility(row) for row in rows]
 
         # Option 5: Direct array at root (if request_data is a list)
         elif isinstance(request_data, list):
             secondary_data = request_data
+            payload_format = "direct_array"
 
         else:
+            print("❌ ERROR: Unrecognized payload format")
+            print(f"   Received keys: {list(request_data.keys()) if isinstance(request_data, dict) else 'not a dict'}")
             return jsonify({
                 'error': 'Missing data in request',
-                'details': 'Expected one of: secondary_data, data, csv_data, or rows+fieldnames'
+                'details': 'Expected one of: secondary_data, data, csv_data, or rows+fieldnames',
+                'status': 'error'
             }), 400
+
+        print(f"✓ Payload format detected: {payload_format}")
+        print(f"✓ Raw data rows received: {len(secondary_data) if secondary_data else 0}")
 
         if not secondary_data:
+            print("❌ ERROR: Empty data provided")
             return jsonify({
                 'error': 'Empty data provided',
-                'details': 'The provided dataset is empty'
+                'details': 'The provided dataset is empty',
+                'status': 'error'
             }), 400
 
-        # Create the snapshot
+        # Create the snapshot (filters to restaurants needing TripAdvisor fallback)
+        print(f"🔍 Filtering restaurants needing TripAdvisor fallback...")
         snapshot = create_tertiary_snapshot(secondary_data)
+        print(f"✓ Normalized snapshot row count: {len(snapshot)} (restaurants needing TripAdvisor)")
 
         # Generate snapshot hash for deduplication
         snapshot_str = json.dumps(snapshot, sort_keys=True)
         snapshot_hash = hashlib.md5(snapshot_str.encode()).hexdigest()
+        print(f"✓ Snapshot hash: {snapshot_hash[:12]}...")
 
         # Check if identical snapshot already exists
         for existing_id, existing_snapshot in tertiary_snapshots.items():
             if existing_snapshot.get('hash') == snapshot_hash:
-                print(f"✓ Returning existing snapshot ID: {existing_id} ({len(snapshot)} items)")
+                print(f"♻️  REUSING EXISTING SNAPSHOT")
+                print(f"   Snapshot ID: {existing_id}")
+                print(f"   Row count: {len(snapshot)}")
+                print("="*80 + "\n")
                 return jsonify({
                     'tertiary_snapshot_id': existing_id,
                     'row_count': len(snapshot),
-                    'message': f'Existing snapshot returned with {len(snapshot)} restaurants',
-                    'reused': True
+                    'status': 'reused'
                 })
 
         # Generate new unique snapshot ID
@@ -442,20 +469,28 @@ def create_snapshot():
         tertiary_snapshot = snapshot
         tertiary_snapshot_locked = True
 
-        print(f"✓ Tertiary snapshot created with ID: {snapshot_id} ({len(snapshot)} items)")
+        print(f"✅ NEW SNAPSHOT CREATED")
+        print(f"   Snapshot ID: {snapshot_id}")
+        print(f"   Row count: {len(snapshot)}")
+        print(f"   Total snapshots in memory: {len(tertiary_snapshots)}")
+        print("="*80 + "\n")
 
         return jsonify({
             'tertiary_snapshot_id': snapshot_id,
             'row_count': len(snapshot),
-            'message': f'Snapshot created with {len(snapshot)} restaurants needing TripAdvisor fallback',
-            'reused': False
+            'status': 'created'
         })
 
     except Exception as e:
-        print(f"Error creating tertiary snapshot: {e}")
+        print(f"❌ SNAPSHOT CREATION FAILED")
+        print(f"   Error: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        print("="*80 + "\n")
+        return jsonify({
+            'error': str(e),
+            'status': 'error'
+        }), 500
 
 
 @app.route('/tertiary/snapshot/status', methods=['GET'])
