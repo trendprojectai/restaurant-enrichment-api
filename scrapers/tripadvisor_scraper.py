@@ -14,11 +14,12 @@ HEADERS = {
 # Stopwords to remove for name normalization
 STOPWORDS = {"the", "restaurant", "kitchen", "bar", "grill", "cafe", "bistro", "brasserie"}
 
-# Constants
+# Constants - Relaxed for better recall during bootstrap
+# Lower thresholds allow more candidates to match, trading precision for recall
 MAX_CANDIDATES = 5
-MIN_NAME_SIMILARITY = 0.80
-MAX_DISTANCE_METERS = 1000
-MIN_CONFIDENCE_SCORE = 0.75
+MIN_NAME_SIMILARITY = 0.65  # Lowered from 0.80 to catch name variations
+MAX_DISTANCE_METERS = 2500  # Increased from 1000m to handle imprecise coordinates
+MIN_CONFIDENCE_SCORE = 0.60  # Lowered from 0.75 to accept more matches
 
 
 def normalize_name(name: str) -> str:
@@ -410,12 +411,14 @@ def search_tripadvisor_validated(
         }
 
     # ACCEPTED! Return final resolved URL and images
+    # Always populate match_notes with all available info for UI explanation
     notes_parts = []
     notes_parts.append(f"name_sim={best['name_similarity']:.2f}")
-    if best['area_match']:
-        notes_parts.append("area_match=true")
+    notes_parts.append(f"area_match={'true' if best['area_match'] else 'false'}")
     if best['distance_m'] is not None:
         notes_parts.append(f"distance={best['distance_m']:.0f}m")
+    else:
+        notes_parts.append("distance=N/A")
 
     return {
         'url': best['candidate']['url'],  # Final resolved URL (after redirects)
