@@ -91,10 +91,6 @@ def extract_candidate_details(link_element, base_url="https://www.tripadvisor.co
         url = base_url + href if href.startswith('/') else href
         name = link_element.get_text(" ", strip=True)
 
-        # Try to extract lat/lng from the page URL or data attributes
-        # TripAdvisor URLs often contain location codes we can parse
-        # For now, return None for lat/lng - will be extracted from detail page
-
         return {
             'url': url,
             'name': name,
@@ -106,18 +102,107 @@ def extract_candidate_details(link_element, base_url="https://www.tripadvisor.co
         return None
 
 
-def scrape_candidate_geolocation(url: str) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+def is_valid_restaurant_page(soup: BeautifulSoup) -> bool:
     """
-    Scrape the candidate's detail page to extract lat/lng and address.
-    Returns: (lat, lng, address)
+    Verify that the page contains Restaurant JSON-LD.
+    MANDATORY: Only accept pages with @type: "Restaurant"
+    """
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            obj = json.loads(script.string)
+            if obj.get("@type") == "Restaurant":
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def extract_images_from_jsonld(soup: BeautifulSoup) -> List[str]:
+    """
+    Extract restaurant images from JSON-LD structured data.
+    Returns list of full-resolution image URLs (max 5).
+    """
+    images = []
+
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            obj = json.loads(script.string)
+            if obj.get("@type") == "Restaurant":
+                # Extract images from "image" field
+                image_data = obj.get("image")
+
+                if isinstance(image_data, list):
+                    # Take first 5 images if list
+                    for img in image_data[:5]:
+                        if isinstance(img, str):
+                            images.append(img)
+                        elif isinstance(img, dict) and img.get("url"):
+                            images.append(img["url"])
+                elif isinstance(image_data, str):
+                    images.append(image_data)
+                elif isinstance(image_data, dict) and image_data.get("url"):
+                    images.append(image_data["url"])
+
+                # If we found images, we're done
+                if images:
+                    break
+        except Exception:
+            continue
+
+    # Filter out thumbnails and icons - only full-resolution URLs
+    filtered_images = []
+    for img_url in images:
+        # Skip thumbnails (usually contain 'thumb' or are very small)
+        if 'thumb' in img_url.lower() or 'icon' in img_url.lower():
+            continue
+        filtered_images.append(img_url)
+
+    return filtered_images[:5]  # Max 5 images
+
+
+def scrape_candidate_geolocation(candidate_url: str) -> Tuple[Optional[str], Optional[float], Optional[float], Optional[str], List[str]]:
+    """
+    Scrape the candidate's detail page with redirect resolution.
+
+    CRITICAL CHANGES:
+    1. Always allow redirects
+    2. Always store final resolved URL (response.url)
+    3. Validate final URL contains "/Restaurant_Review-"
+    4. Verify Restaurant JSON-LD exists
+    5. Extract images from JSON
+
+    Returns: (final_url, lat, lng, address, images) or (None, None, None, None, [])
     """
     try:
-        r = requests.get(url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
+        # STEP 1: Always allow redirects and get final URL
+        response = requests.get(
+            candidate_url,
+            headers=HEADERS,
+            timeout=15,
+            allow_redirects=True  # CRITICAL: Always resolve redirects
+        )
+
+        # STEP 2: Store final resolved URL
+        final_url = response.url
+
+        # STEP 3: Final URL validation - MUST contain "/Restaurant_Review-"
+        if '/Restaurant_Review-' not in final_url:
+            # Redirected to non-restaurant page (Tourism, Vacations, etc.)
+            return None, None, None, None, []
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # STEP 4: Restaurant JSON-LD verification - MANDATORY
+        if not is_valid_restaurant_page(soup):
+            # Page doesn't have Restaurant structured data - reject
+            return None, None, None, None, []
+
+        # STEP 5: Extract images from JSON
+        images = extract_images_from_jsonld(soup)
 
         lat, lng, address = None, None, None
 
-        # Try JSON-LD structured data
+        # Extract geolocation from JSON-LD
         for script in soup.find_all("script", type="application/ld+json"):
             try:
                 obj = json.loads(script.string)
@@ -143,7 +228,6 @@ def scrape_candidate_geolocation(url: str) -> Tuple[Optional[float], Optional[fl
 
         # Fallback: try meta tags or data attributes
         if not lat or not lng:
-            # Look for data-lat/data-lng attributes
             for elem in soup.find_all(attrs={"data-lat": True}):
                 try:
                     lat = float(elem.get("data-lat"))
@@ -152,11 +236,15 @@ def scrape_candidate_geolocation(url: str) -> Tuple[Optional[float], Optional[fl
                 except:
                     pass
 
-        return (float(lat) if lat else None,
-                float(lng) if lng else None,
-                address)
+        return (
+            final_url,  # CRITICAL: Return final resolved URL, not input URL
+            float(lat) if lat else None,
+            float(lng) if lng else None,
+            address,
+            images
+        )
     except Exception as e:
-        return None, None, None
+        return None, None, None, None, []
 
 
 def check_area_match(area: str, address: str) -> bool:
@@ -201,15 +289,16 @@ def search_tripadvisor_validated(
     longitude: Optional[float] = None
 ) -> Dict:
     """
-    Search TripAdvisor with multi-candidate validation.
+    Search TripAdvisor with multi-candidate validation and redirect resolution.
 
     Returns:
     {
-        'url': validated URL or None,
+        'url': validated final URL or None,
         'status': 'found' | 'not_found',
         'confidence': 0.0-1.0 or None,
         'distance_m': distance in meters or None,
-        'match_notes': explanation string
+        'match_notes': explanation string,
+        'images': list of image URLs
     }
     """
     query = quote(f"{name} {city}")
@@ -224,7 +313,8 @@ def search_tripadvisor_validated(
             'status': 'not_found',
             'confidence': None,
             'distance_m': None,
-            'match_notes': f'Search request failed: {str(e)[:50]}'
+            'match_notes': f'Search request failed: {str(e)[:50]}',
+            'images': []
         }
 
     # STEP 1: Collect up to MAX_CANDIDATES candidate links
@@ -243,7 +333,8 @@ def search_tripadvisor_validated(
             'status': 'not_found',
             'confidence': None,
             'distance_m': None,
-            'match_notes': 'No restaurant candidates found in search results'
+            'match_notes': 'No restaurant candidates found in search results',
+            'images': []
         }
 
     # STEP 2-6: Score each candidate
@@ -257,11 +348,19 @@ def search_tripadvisor_validated(
         if name_sim < MIN_NAME_SIMILARITY:
             continue
 
-        # STEP 3: Fetch geolocation from candidate page
-        cand_lat, cand_lng, cand_address = scrape_candidate_geolocation(candidate['url'])
+        # STEP 3: Fetch geolocation with redirect resolution and validation
+        final_url, cand_lat, cand_lng, cand_address, images = scrape_candidate_geolocation(candidate['url'])
+
+        # If redirect resolved to non-restaurant page or no Restaurant JSON-LD, reject
+        if not final_url:
+            continue
+
+        # Update candidate with resolved data
+        candidate['url'] = final_url  # CRITICAL: Use final resolved URL
         candidate['lat'] = cand_lat
         candidate['lng'] = cand_lng
         candidate['address'] = cand_address
+        candidate['images'] = images
 
         # STEP 4: Geographic distance validation
         distance_m = None
@@ -292,7 +391,8 @@ def search_tripadvisor_validated(
             'status': 'not_found',
             'confidence': None,
             'distance_m': None,
-            'match_notes': f'All {len(candidates)} candidates rejected (name similarity < {MIN_NAME_SIMILARITY} or distance > {MAX_DISTANCE_METERS}m)'
+            'match_notes': f'All {len(candidates)} candidates rejected (name similarity < {MIN_NAME_SIMILARITY}, distance > {MAX_DISTANCE_METERS}m, or invalid Restaurant page)',
+            'images': []
         }
 
     # STEP 7: Select best candidate
@@ -305,10 +405,11 @@ def search_tripadvisor_validated(
             'status': 'not_found',
             'confidence': None,
             'distance_m': None,
-            'match_notes': f'Best candidate confidence ({best["confidence"]}) below threshold ({MIN_CONFIDENCE_SCORE})'
+            'match_notes': f'Best candidate confidence ({best["confidence"]}) below threshold ({MIN_CONFIDENCE_SCORE})',
+            'images': []
         }
 
-    # ACCEPTED!
+    # ACCEPTED! Return final resolved URL and images
     notes_parts = []
     notes_parts.append(f"name_sim={best['name_similarity']:.2f}")
     if best['area_match']:
@@ -317,11 +418,12 @@ def search_tripadvisor_validated(
         notes_parts.append(f"distance={best['distance_m']:.0f}m")
 
     return {
-        'url': best['candidate']['url'],
+        'url': best['candidate']['url'],  # Final resolved URL (after redirects)
         'status': 'found',
         'confidence': best['confidence'],
         'distance_m': best['distance_m'],
-        'match_notes': ' | '.join(notes_parts)
+        'match_notes': ' | '.join(notes_parts),
+        'images': best['candidate']['images']  # Images from JSON-LD
     }
 
 
@@ -426,9 +528,23 @@ def extract_tripadvisor_json(soup):
 
 
 def scrape_tripadvisor_page(url: str):
-    """Scrape TripAdvisor page with two-layer approach: HTML first, then JSON-LD fallback."""
-    r = requests.get(url, headers=HEADERS, timeout=10)
-    soup = BeautifulSoup(r.text, "html.parser")
+    """
+    Scrape TripAdvisor page with redirect resolution and validation.
+    Returns enrichment data (opening_hours, cuisine_type, price_range, phone).
+    """
+    # CRITICAL: Always allow redirects and get final URL
+    response = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
+    final_url = response.url
+
+    # Validate final URL
+    if '/Restaurant_Review-' not in final_url:
+        return {}  # Redirected to non-restaurant page
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    # Verify Restaurant JSON-LD exists
+    if not is_valid_restaurant_page(soup):
+        return {}  # Not a valid restaurant page
 
     data = {}
 

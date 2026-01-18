@@ -150,6 +150,7 @@ class RestaurantEnricher:
             'tripadvisor_confidence': None,
             'tripadvisor_distance_m': None,
             'tripadvisor_match_notes': None,
+            'tripadvisor_images': [],
             'tertiary_updates': None,
         }
 
@@ -1072,6 +1073,7 @@ def main():
                 'tripadvisor_confidence': None,
                 'tripadvisor_distance_m': None,
                 'tripadvisor_match_notes': None,
+                'tripadvisor_images': [],
                 'tertiary_updates': None,
             })
 
@@ -1113,6 +1115,7 @@ def main():
         'tripadvisor_confidence',
         'tripadvisor_distance_m',
         'tripadvisor_match_notes',
+        'tripadvisor_images',
         'tertiary_updates',
     ]
 
@@ -1126,6 +1129,7 @@ def main():
             data_copy['gallery_images'] = json.dumps(data_copy.get('gallery_images', [])) if data_copy.get('gallery_images') else None
             data_copy['opening_hours'] = json.dumps(data_copy.get('opening_hours', [])) if data_copy.get('opening_hours') else None
             data_copy['tiktok_videos'] = json.dumps(data_copy.get('tiktok_videos', [])) if data_copy.get('tiktok_videos') else None
+            data_copy['tripadvisor_images'] = json.dumps(data_copy.get('tripadvisor_images', [])) if data_copy.get('tripadvisor_images') else None
             data_copy['tertiary_updates'] = json.dumps(data_copy.get('tertiary_updates', {})) if data_copy.get('tertiary_updates') else None
 
             # SAFE ROW WRITE: only include fields in canonical schema

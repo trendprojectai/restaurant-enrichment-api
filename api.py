@@ -59,6 +59,7 @@ CSV_FIELDNAMES = [
     'tripadvisor_confidence',
     'tripadvisor_distance_m',
     'tripadvisor_match_notes',
+    'tripadvisor_images',
     'tertiary_updates',
 ]
 
@@ -122,6 +123,7 @@ def merge_enriched_results(base_dataset, fallback_results):
             record['tripadvisor_confidence'] = fallback.get('tripadvisor_confidence')
             record['tripadvisor_distance_m'] = fallback.get('tripadvisor_distance_m')
             record['tripadvisor_match_notes'] = fallback.get('tripadvisor_match_notes')
+            record['tripadvisor_images'] = fallback.get('tripadvisor_images')
 
         merged.append(record)
 
@@ -154,6 +156,7 @@ def write_final_csv(dataset):
             record_copy['gallery_images'] = json.dumps(record_copy.get('gallery_images', [])) if record_copy.get('gallery_images') else None
             record_copy['opening_hours'] = json.dumps(record_copy.get('opening_hours', [])) if record_copy.get('opening_hours') else None
             record_copy['tiktok_videos'] = json.dumps(record_copy.get('tiktok_videos', [])) if record_copy.get('tiktok_videos') else None
+            record_copy['tripadvisor_images'] = json.dumps(record_copy.get('tripadvisor_images', [])) if record_copy.get('tripadvisor_images') else None
             record_copy['tertiary_updates'] = json.dumps(record_copy.get('tertiary_updates', {})) if record_copy.get('tertiary_updates') else None
 
             # SAFE ROW WRITE: only include fields in canonical schema
@@ -298,6 +301,7 @@ def enrich():
                     'tripadvisor_confidence': None,
                     'tripadvisor_distance_m': None,
                     'tripadvisor_match_notes': None,
+                    'tripadvisor_images': [],
                     'tertiary_updates': None,
                 }
                 enriched_data.append(fallback_record)
@@ -313,6 +317,7 @@ def enrich():
                 data_copy['gallery_images'] = json.dumps(data_copy.get('gallery_images', [])) if data_copy.get('gallery_images') else None
                 data_copy['opening_hours'] = json.dumps(data_copy.get('opening_hours', [])) if data_copy.get('opening_hours') else None
                 data_copy['tiktok_videos'] = json.dumps(data_copy.get('tiktok_videos', [])) if data_copy.get('tiktok_videos') else None
+                data_copy['tripadvisor_images'] = json.dumps(data_copy.get('tripadvisor_images', [])) if data_copy.get('tripadvisor_images') else None
                 data_copy['tertiary_updates'] = json.dumps(data_copy.get('tertiary_updates', {})) if data_copy.get('tertiary_updates') else None
 
                 # SAFE ROW WRITE: only include fields in canonical schema
@@ -467,6 +472,7 @@ def enrich_tertiary():
                         'tripadvisor_confidence': ta_result['confidence'],
                         'tripadvisor_distance_m': ta_result['distance_m'],
                         'tripadvisor_match_notes': ta_result['match_notes'],
+                        'tripadvisor_images': ta_result.get('images', []),
                     }
 
                     # Opening hours
@@ -516,6 +522,7 @@ def enrich_tertiary():
                         'tripadvisor_confidence': None,
                         'tripadvisor_distance_m': None,
                         'tripadvisor_match_notes': ta_result['match_notes'],
+                        'tripadvisor_images': [],
                     })
 
             except Exception as e:
@@ -535,6 +542,7 @@ def enrich_tertiary():
                     'tripadvisor_confidence': None,
                     'tripadvisor_distance_m': None,
                     'tripadvisor_match_notes': f'Error: {str(e)[:100]}',
+                    'tripadvisor_images': [],
                 })
 
         print(f"✓ Completed TripAdvisor enrichment for {len(enriched_data)} restaurants")
@@ -637,6 +645,7 @@ def push_to_export():
             record_copy['gallery_images'] = json.dumps(record_copy.get('gallery_images', [])) if record_copy.get('gallery_images') else None
             record_copy['opening_hours'] = json.dumps(record_copy.get('opening_hours', [])) if record_copy.get('opening_hours') else None
             record_copy['tiktok_videos'] = json.dumps(record_copy.get('tiktok_videos', [])) if record_copy.get('tiktok_videos') else None
+            record_copy['tripadvisor_images'] = json.dumps(record_copy.get('tripadvisor_images', [])) if record_copy.get('tripadvisor_images') else None
             record_copy['tertiary_updates'] = json.dumps(record_copy.get('tertiary_updates', {})) if record_copy.get('tertiary_updates') else None
 
             # SAFE ROW WRITE: only include fields in canonical schema
