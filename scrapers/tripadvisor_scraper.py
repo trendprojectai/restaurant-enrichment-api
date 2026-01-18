@@ -2,6 +2,7 @@ import requests
 import re
 import json
 import math
+import unicodedata
 from difflib import SequenceMatcher
 from bs4 import BeautifulSoup
 from urllib.parse import quote
@@ -14,12 +15,29 @@ HEADERS = {
 # Stopwords to remove for name normalization
 STOPWORDS = {"the", "restaurant", "kitchen", "bar", "grill", "cafe", "bistro", "brasserie"}
 
+# Additional stopwords for aggressive search query normalization
+SEARCH_STOPWORDS = STOPWORDS | {"street", "soho", "st", "road", "rd", "avenue", "ave", "lane", "ln"}
+
 # Constants - Relaxed for better recall during bootstrap
 # Lower thresholds allow more candidates to match, trading precision for recall
 MAX_CANDIDATES = 5
 MIN_NAME_SIMILARITY = 0.65  # Lowered from 0.80 to catch name variations
 MAX_DISTANCE_METERS = 2500  # Increased from 1000m to handle imprecise coordinates
 MIN_CONFIDENCE_SCORE = 0.60  # Lowered from 0.75 to accept more matches
+WEAK_MATCH_THRESHOLD = 0.45  # Minimum for weak matches
+
+
+def strip_accents(text: str) -> str:
+    """
+    Remove accents/diacritics from text.
+    Example: 'café' -> 'cafe'
+    """
+    if not text:
+        return ""
+
+    # Normalize to NFD (decomposed form) and filter out combining characters
+    nfd = unicodedata.normalize('NFD', text)
+    return ''.join(char for char in nfd if unicodedata.category(char) != 'Mn')
 
 
 def normalize_name(name: str) -> str:
@@ -40,6 +58,32 @@ def normalize_name(name: str) -> str:
 
     # Split into tokens and remove stopwords
     tokens = [t for t in name.split() if t and t not in STOPWORDS]
+
+    return ' '.join(tokens)
+
+
+def normalize_search_query(name: str) -> str:
+    """
+    Aggressive normalization for search queries.
+    - Lowercase
+    - Strip accents
+    - Remove punctuation
+    - Remove stopwords (including street, soho, etc.)
+    """
+    if not name:
+        return ""
+
+    # Lowercase
+    name = name.lower()
+
+    # Strip accents
+    name = strip_accents(name)
+
+    # Remove punctuation
+    name = re.sub(r'[^\w\s]', ' ', name)
+
+    # Split into tokens and remove search stopwords
+    tokens = [t for t in name.split() if t and t not in SEARCH_STOPWORDS]
 
     return ' '.join(tokens)
 
@@ -282,43 +326,22 @@ def calculate_confidence_score(name_sim: float, area_match: bool, distance_m: Op
     return round(score, 2)
 
 
-def search_tripadvisor_validated(
-    name: str,
-    city: str = "London",
-    area: Optional[str] = None,
-    latitude: Optional[float] = None,
-    longitude: Optional[float] = None
-) -> Dict:
+def execute_tripadvisor_search(query: str) -> List[Dict]:
     """
-    Search TripAdvisor with multi-candidate validation and redirect resolution.
+    Execute a single TripAdvisor search and return raw candidates.
+    Never rejects - returns all candidates found.
 
-    Returns:
-    {
-        'url': validated final URL or None,
-        'status': 'found' | 'not_found',
-        'confidence': 0.0-1.0 or None,
-        'distance_m': distance in meters or None,
-        'match_notes': explanation string,
-        'images': list of image URLs
-    }
+    Returns: List of candidate dicts with {url, name, lat, lng, address}
     """
-    query = quote(f"{name} {city}")
-    search_url = f"https://www.tripadvisor.co.uk/Search?q={query}"
+    search_url = f"https://www.tripadvisor.co.uk/Search?q={quote(query)}"
 
     try:
         r = requests.get(search_url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(r.text, "html.parser")
     except Exception as e:
-        return {
-            'url': None,
-            'status': 'not_found',
-            'confidence': None,
-            'distance_m': None,
-            'match_notes': f'Search request failed: {str(e)[:50]}',
-            'images': []
-        }
+        return []
 
-    # STEP 1: Collect up to MAX_CANDIDATES candidate links
+    # Collect up to MAX_CANDIDATES candidate links
     candidates = []
     for link in soup.select("a[href*='/Restaurant_Review']"):
         if len(candidates) >= MAX_CANDIDATES:
@@ -328,13 +351,69 @@ def search_tripadvisor_validated(
         if candidate:
             candidates.append(candidate)
 
+    return candidates
+
+
+def search_tripadvisor_validated(
+    name: str,
+    city: str = "London",
+    area: Optional[str] = None,
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None
+) -> Dict:
+    """
+    Search TripAdvisor with multi-pass search and validation.
+
+    Multi-pass search strategy:
+    1. Try "{name} {area}" if area exists
+    2. Try normalized name only
+    3. Try "{normalized_name} London"
+
+    Returns:
+    {
+        'url': validated final URL or None,
+        'status': 'found' | 'weak_match' | 'not_found',
+        'confidence': 0.0-1.0 or None,
+        'distance_m': distance in meters or None,
+        'match_notes': explanation string,
+        'images': list of image URLs
+    }
+    """
+    candidates = []
+
+    # MULTI-PASS SEARCH
+    # Pass 1: Try "{name} {area}" if area exists
+    if area:
+        query1 = f"{name} {area}"
+        candidates = execute_tripadvisor_search(query1)
+        if candidates:
+            print(f"  → Pass 1 succeeded: '{query1}' → {len(candidates)} candidates")
+
+    # Pass 2: Try normalized name only
+    if not candidates:
+        normalized = normalize_search_query(name)
+        if normalized:
+            candidates = execute_tripadvisor_search(normalized)
+            if candidates:
+                print(f"  → Pass 2 succeeded: '{normalized}' → {len(candidates)} candidates")
+
+    # Pass 3: Try "{normalized_name} London"
+    if not candidates:
+        normalized = normalize_search_query(name)
+        if normalized:
+            query3 = f"{normalized} London"
+            candidates = execute_tripadvisor_search(query3)
+            if candidates:
+                print(f"  → Pass 3 succeeded: '{query3}' → {len(candidates)} candidates")
+
+    # If still no candidates after all passes, return not_found
     if not candidates:
         return {
             'url': None,
             'status': 'not_found',
             'confidence': None,
             'distance_m': None,
-            'match_notes': 'No restaurant candidates found in search results',
+            'match_notes': 'No restaurant candidates found after 3 search passes',
             'images': []
         }
 
@@ -399,18 +478,6 @@ def search_tripadvisor_validated(
     # STEP 7: Select best candidate
     best = max(scored_candidates, key=lambda x: x['confidence'])
 
-    # HARD RULE: Accept only if confidence >= MIN_CONFIDENCE_SCORE
-    if best['confidence'] < MIN_CONFIDENCE_SCORE:
-        return {
-            'url': None,
-            'status': 'not_found',
-            'confidence': None,
-            'distance_m': None,
-            'match_notes': f'Best candidate confidence ({best["confidence"]}) below threshold ({MIN_CONFIDENCE_SCORE})',
-            'images': []
-        }
-
-    # ACCEPTED! Return final resolved URL and images
     # Always populate match_notes with all available info for UI explanation
     notes_parts = []
     notes_parts.append(f"name_sim={best['name_similarity']:.2f}")
@@ -420,14 +487,39 @@ def search_tripadvisor_validated(
     else:
         notes_parts.append("distance=N/A")
 
-    return {
-        'url': best['candidate']['url'],  # Final resolved URL (after redirects)
-        'status': 'found',
-        'confidence': best['confidence'],
-        'distance_m': best['distance_m'],
-        'match_notes': ' | '.join(notes_parts),
-        'images': best['candidate']['images']  # Images from JSON-LD
-    }
+    match_notes = ' | '.join(notes_parts)
+
+    # Determine match status based on confidence
+    if best['confidence'] >= MIN_CONFIDENCE_SCORE:
+        # STRONG MATCH: confidence >= 0.60
+        return {
+            'url': best['candidate']['url'],  # Final resolved URL (after redirects)
+            'status': 'found',
+            'confidence': best['confidence'],
+            'distance_m': best['distance_m'],
+            'match_notes': match_notes,
+            'images': best['candidate']['images']  # Images from JSON-LD
+        }
+    elif best['confidence'] >= WEAK_MATCH_THRESHOLD:
+        # WEAK MATCH: 0.45 <= confidence < 0.60
+        return {
+            'url': best['candidate']['url'],  # Final resolved URL (after redirects)
+            'status': 'weak_match',
+            'confidence': best['confidence'],
+            'distance_m': best['distance_m'],
+            'match_notes': match_notes + ' | WEAK_MATCH',
+            'images': best['candidate']['images']  # Images from JSON-LD
+        }
+    else:
+        # TOO LOW: confidence < 0.45
+        return {
+            'url': None,
+            'status': 'not_found',
+            'confidence': None,
+            'distance_m': None,
+            'match_notes': f'Best candidate confidence ({best["confidence"]:.2f}) below minimum threshold ({WEAK_MATCH_THRESHOLD})',
+            'images': []
+        }
 
 
 def search_tripadvisor(name: str, city: str = "London"):
