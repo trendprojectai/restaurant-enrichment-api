@@ -5,15 +5,18 @@ from secondary_enrichment import RestaurantEnricher
 import tempfile
 import os
 import json
+import uuid
+import hashlib
 
 app = Flask(__name__)
 
 # Enable CORS - allow all origins
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# Tertiary snapshot storage (immutable once created)
-tertiary_snapshot = []
-tertiary_snapshot_locked = False
+# Tertiary snapshot storage (persisted by snapshot_id)
+tertiary_snapshots = {}  # {snapshot_id: {'data': [...], 'locked': True, 'hash': 'abc123'}}
+tertiary_snapshot = []  # Legacy - kept for backward compatibility
+tertiary_snapshot_locked = False  # Legacy
 
 # Final enriched dataset (after tertiary scrape completion)
 final_enriched_dataset = []
@@ -354,7 +357,7 @@ def enrich():
 @app.route('/tertiary/snapshot', methods=['POST', 'OPTIONS'])
 def create_snapshot():
     """Create tertiary snapshot from secondary enrichment results"""
-    global tertiary_snapshot, tertiary_snapshot_locked
+    global tertiary_snapshots, tertiary_snapshot, tertiary_snapshot_locked
 
     # Handle preflight OPTIONS request
     if request.method == 'OPTIONS':
@@ -371,17 +374,42 @@ def create_snapshot():
         # Create the snapshot
         snapshot = create_tertiary_snapshot(secondary_data)
 
-        # Lock the snapshot
+        # Generate snapshot hash for deduplication
+        snapshot_str = json.dumps(snapshot, sort_keys=True)
+        snapshot_hash = hashlib.md5(snapshot_str.encode()).hexdigest()
+
+        # Check if identical snapshot already exists
+        for existing_id, existing_snapshot in tertiary_snapshots.items():
+            if existing_snapshot.get('hash') == snapshot_hash:
+                print(f"✓ Returning existing snapshot ID: {existing_id} ({len(snapshot)} items)")
+                return jsonify({
+                    'tertiary_snapshot_id': existing_id,
+                    'row_count': len(snapshot),
+                    'message': f'Existing snapshot returned with {len(snapshot)} restaurants',
+                    'reused': True
+                })
+
+        # Generate new unique snapshot ID
+        snapshot_id = str(uuid.uuid4())
+
+        # Persist snapshot with ID
+        tertiary_snapshots[snapshot_id] = {
+            'data': snapshot,
+            'locked': True,
+            'hash': snapshot_hash
+        }
+
+        # Legacy: also set global snapshot for backward compatibility
         tertiary_snapshot = snapshot
         tertiary_snapshot_locked = True
 
-        print(f"✓ Tertiary snapshot locked with {len(tertiary_snapshot)} items")
+        print(f"✓ Tertiary snapshot created with ID: {snapshot_id} ({len(snapshot)} items)")
 
         return jsonify({
-            'success': True,
-            'snapshot_count': len(tertiary_snapshot),
-            'locked': tertiary_snapshot_locked,
-            'message': f'Snapshot created with {len(tertiary_snapshot)} restaurants needing TripAdvisor fallback'
+            'tertiary_snapshot_id': snapshot_id,
+            'row_count': len(snapshot),
+            'message': f'Snapshot created with {len(snapshot)} restaurants needing TripAdvisor fallback',
+            'reused': False
         })
 
     except Exception as e:
@@ -404,27 +432,51 @@ def snapshot_status():
 @app.route('/tertiary/enrich', methods=['POST', 'OPTIONS'])
 def enrich_tertiary():
     """Run TripAdvisor enrichment on tertiary snapshot"""
-    global tertiary_snapshot
+    global tertiary_snapshots
 
     # Handle preflight OPTIONS request
     if request.method == 'OPTIONS':
         return '', 200
 
     try:
-        if not tertiary_snapshot_locked:
-            return jsonify({'error': 'Tertiary snapshot not created yet. Call /tertiary/snapshot first'}), 400
+        # CRITICAL: Require tertiary_snapshot_id in request body
+        data = request.get_json()
+        if not data or 'tertiary_snapshot_id' not in data:
+            return jsonify({
+                'error': 'Tertiary snapshot not created yet. Call /tertiary/snapshot first',
+                'details': 'Missing tertiary_snapshot_id in request body'
+            }), 400
 
-        if len(tertiary_snapshot) == 0:
-            return jsonify({'message': 'No restaurants in tertiary snapshot', 'success': True, 'count': 0})
+        snapshot_id = data['tertiary_snapshot_id']
 
-        print(f"Running TripAdvisor enrichment on {len(tertiary_snapshot)} restaurants...")
+        # Validate snapshot_id exists
+        if snapshot_id not in tertiary_snapshots:
+            return jsonify({
+                'error': f'Snapshot ID {snapshot_id} not found',
+                'details': 'Invalid or expired tertiary_snapshot_id. Call /tertiary/snapshot to create a new snapshot.'
+            }), 404
+
+        # Get the snapshot data
+        snapshot_obj = tertiary_snapshots[snapshot_id]
+        snapshot_data = snapshot_obj['data']
+
+        # Validate snapshot is not empty
+        if len(snapshot_data) == 0:
+            return jsonify({
+                'error': 'Snapshot exists but is empty',
+                'details': 'The snapshot contains 0 restaurants. No TripAdvisor enrichment needed.',
+                'success': True,
+                'count': 0
+            }), 400
+
+        print(f"Running TripAdvisor enrichment on snapshot {snapshot_id} ({len(snapshot_data)} restaurants)...")
 
         # Import TripAdvisor scraper
         from scrapers.tripadvisor_scraper import search_tripadvisor_validated, scrape_tripadvisor_page
 
         enriched_data = []
 
-        for i, restaurant in enumerate(tertiary_snapshot):
+        for i, restaurant in enumerate(snapshot_data):
             try:
                 name = restaurant.get('name', 'Unknown')
                 city = restaurant.get('city', 'London')
@@ -443,7 +495,7 @@ def enrich_tertiary():
                     latitude = None
                     longitude = None
 
-                print(f"TripAdvisor enriching {i+1}/{len(tertiary_snapshot)}: {name}")
+                print(f"TripAdvisor enriching {i+1}/{len(snapshot_data)}: {name}")
 
                 # Search TripAdvisor with validation
                 ta_result = search_tripadvisor_validated(
