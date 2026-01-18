@@ -364,12 +364,51 @@ def create_snapshot():
         return '', 200
 
     try:
-        # Get secondary enrichment data
-        data = request.get_json()
-        if not data or 'secondary_data' not in data:
-            return jsonify({'error': 'Missing secondary_data in request'}), 400
+        # Get request data
+        request_data = request.get_json()
+        if not request_data:
+            return jsonify({'error': 'Missing request body'}), 400
 
-        secondary_data = data['secondary_data']
+        # FLEXIBLE PAYLOAD HANDLING: Accept multiple field names
+        secondary_data = None
+
+        # Option 1: secondary_data field (original format)
+        if 'secondary_data' in request_data:
+            secondary_data = request_data['secondary_data']
+
+        # Option 2: data field (common alternative)
+        elif 'data' in request_data:
+            secondary_data = request_data['data']
+
+        # Option 3: csv_data field (CSV string format)
+        elif 'csv_data' in request_data:
+            csv_data = request_data['csv_data']
+            # Parse CSV string into array of dicts
+            import io
+            csv_reader = csv.DictReader(io.StringIO(csv_data))
+            secondary_data = [ensure_csv_compatibility(row) for row in csv_reader]
+
+        # Option 4: rows + fieldnames format
+        elif 'rows' in request_data and 'fieldnames' in request_data:
+            rows = request_data['rows']
+            # Rows are already dicts, ensure compatibility
+            secondary_data = [ensure_csv_compatibility(row) for row in rows]
+
+        # Option 5: Direct array at root (if request_data is a list)
+        elif isinstance(request_data, list):
+            secondary_data = request_data
+
+        else:
+            return jsonify({
+                'error': 'Missing data in request',
+                'details': 'Expected one of: secondary_data, data, csv_data, or rows+fieldnames'
+            }), 400
+
+        if not secondary_data:
+            return jsonify({
+                'error': 'Empty data provided',
+                'details': 'The provided dataset is empty'
+            }), 400
 
         # Create the snapshot
         snapshot = create_tertiary_snapshot(secondary_data)
