@@ -18,6 +18,7 @@ tertiary_snapshot_locked = False
 # Final enriched dataset (after tertiary scrape completion)
 final_enriched_dataset = []
 secondary_dataset = []  # Store secondary results for merging
+final_csv_path = None  # Path to the persisted final CSV file
 
 
 def merge_enriched_results(base_dataset, fallback_results):
@@ -56,9 +57,57 @@ def merge_enriched_results(base_dataset, fallback_results):
             if not record.get('phone'):
                 record['phone'] = fallback.get('phone')
 
+            # Merge TripAdvisor tracking fields
+            record['tripadvisor_url'] = fallback.get('tripadvisor_url')
+            record['tripadvisor_status'] = fallback.get('tripadvisor_status')
+            record['tertiary_updates'] = fallback.get('tertiary_updates')
+
         merged.append(record)
 
     return merged
+
+
+def write_final_csv(dataset):
+    """
+    Write the final enriched dataset to a persistent CSV file.
+    This ensures single CSV continuity across all downstream stages.
+
+    Args:
+        dataset: Final merged dataset to write
+
+    Returns:
+        Path to the written CSV file
+    """
+    global final_csv_path
+
+    # Create a persistent temp file (won't be auto-deleted)
+    final_csv_path = os.path.join(tempfile.gettempdir(), 'final_enriched_dataset.csv')
+
+    with open(final_csv_path, 'w', encoding='utf-8', newline='') as f:
+        fieldnames = [
+            'google_place_id', 'cover_image', 'cover_image_alt',
+            'menu_url', 'menu_pdf_url', 'gallery_images',
+            'phone', 'phone_formatted', 'email',
+            'instagram_handle', 'instagram_url',
+            'tiktok_handle', 'tiktok_url', 'tiktok_videos',
+            'facebook_url', 'opening_hours',
+            'cuisine_type', 'price_range',
+            'tripadvisor_url', 'tripadvisor_status', 'tertiary_updates'
+        ]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for record in dataset:
+            row = record.copy()
+            # Convert lists/dicts to JSON
+            row['gallery_images'] = json.dumps(row.get('gallery_images', [])) if row.get('gallery_images') else None
+            row['opening_hours'] = json.dumps(row.get('opening_hours', [])) if row.get('opening_hours') else None
+            row['tiktok_videos'] = json.dumps(row.get('tiktok_videos', [])) if row.get('tiktok_videos') else None
+            row['tertiary_updates'] = json.dumps(row.get('tertiary_updates', {})) if row.get('tertiary_updates') else None
+            writer.writerow(row)
+
+    print(f"✓ Final CSV written to: {final_csv_path}")
+    return final_csv_path
 
 
 def create_tertiary_snapshot(secondary_data):
@@ -176,6 +225,9 @@ def enrich():
                     'opening_hours': None,
                     'cuisine_type': None,
                     'price_range': None,
+                    'tripadvisor_url': None,
+                    'tripadvisor_status': None,
+                    'tertiary_updates': None,
                 })
         
         # Write output CSV
@@ -187,7 +239,8 @@ def enrich():
                 'instagram_handle', 'instagram_url',
                 'tiktok_handle', 'tiktok_url', 'tiktok_videos',
                 'facebook_url', 'opening_hours',
-                'cuisine_type', 'price_range'
+                'cuisine_type', 'price_range',
+                'tripadvisor_url', 'tripadvisor_status', 'tertiary_updates'
             ]
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
@@ -198,6 +251,7 @@ def enrich():
                 row['gallery_images'] = json.dumps(row.get('gallery_images', [])) if row.get('gallery_images') else None
                 row['opening_hours'] = json.dumps(row.get('opening_hours', [])) if row.get('opening_hours') else None
                 row['tiktok_videos'] = json.dumps(row.get('tiktok_videos', [])) if row.get('tiktok_videos') else None
+                row['tertiary_updates'] = json.dumps(row.get('tertiary_updates', {})) if row.get('tertiary_updates') else None
                 writer.writerow(row)
         
         # Read enriched output
@@ -315,36 +369,74 @@ def enrich_tertiary():
                     print(f"  ✓ Found on TripAdvisor: {ta_url}")
                     ta_data = scrape_tripadvisor_page(ta_url)
 
-                    # Merge with existing data (fill nulls only)
+                    # Track which fields were updated
+                    updates = {}
+
+                    # Merge with existing data (fill nulls only) and track updates
                     result = {
                         'google_place_id': google_place_id,
-                        'opening_hours': ta_data.get('opening_hours') if not restaurant.get('existing_opening_hours') else restaurant.get('existing_opening_hours'),
-                        'cuisine_type': ta_data.get('cuisine_type') if not restaurant.get('existing_cuisine_type') else restaurant.get('existing_cuisine_type'),
-                        'price_range': ta_data.get('price_range') if not restaurant.get('existing_price_range') else restaurant.get('existing_price_range'),
-                        'phone': ta_data.get('phone') if not restaurant.get('existing_phone') else restaurant.get('existing_phone'),
+                        'tripadvisor_url': ta_url,
+                        'tripadvisor_status': 'found',
                     }
+
+                    # Opening hours
+                    if not restaurant.get('existing_opening_hours') and ta_data.get('opening_hours'):
+                        result['opening_hours'] = ta_data.get('opening_hours')
+                        updates['opening_hours'] = 'filled_from_tripadvisor'
+                    else:
+                        result['opening_hours'] = restaurant.get('existing_opening_hours')
+
+                    # Cuisine type
+                    if not restaurant.get('existing_cuisine_type') and ta_data.get('cuisine_type'):
+                        result['cuisine_type'] = ta_data.get('cuisine_type')
+                        updates['cuisine_type'] = 'filled_from_tripadvisor'
+                    else:
+                        result['cuisine_type'] = restaurant.get('existing_cuisine_type')
+
+                    # Price range
+                    if not restaurant.get('existing_price_range') and ta_data.get('price_range'):
+                        result['price_range'] = ta_data.get('price_range')
+                        updates['price_range'] = 'filled_from_tripadvisor'
+                    else:
+                        result['price_range'] = restaurant.get('existing_price_range')
+
+                    # Phone
+                    if not restaurant.get('existing_phone') and ta_data.get('phone'):
+                        result['phone'] = ta_data.get('phone')
+                        updates['phone'] = 'filled_from_tripadvisor'
+                    else:
+                        result['phone'] = restaurant.get('existing_phone')
+
+                    # Store updates
+                    result['tertiary_updates'] = updates if updates else None
 
                     enriched_data.append(result)
                 else:
                     print(f"  ⚠ Not found on TripAdvisor")
-                    # Return existing data
+                    # Return existing data with not_found status
                     enriched_data.append({
                         'google_place_id': google_place_id,
                         'opening_hours': restaurant.get('existing_opening_hours'),
                         'cuisine_type': restaurant.get('existing_cuisine_type'),
                         'price_range': restaurant.get('existing_price_range'),
                         'phone': restaurant.get('existing_phone'),
+                        'tripadvisor_url': None,
+                        'tripadvisor_status': 'not_found',
+                        'tertiary_updates': None,
                     })
 
             except Exception as e:
                 print(f"Error enriching {restaurant.get('name', 'Unknown')}: {e}")
-                # Return existing data on error
+                # Return existing data on error with error status
                 enriched_data.append({
                     'google_place_id': restaurant.get('google_place_id', ''),
                     'opening_hours': restaurant.get('existing_opening_hours'),
                     'cuisine_type': restaurant.get('existing_cuisine_type'),
                     'price_range': restaurant.get('existing_price_range'),
                     'phone': restaurant.get('existing_phone'),
+                    'tripadvisor_url': None,
+                    'tripadvisor_status': 'error',
+                    'tertiary_updates': None,
                 })
 
         print(f"✓ Completed TripAdvisor enrichment for {len(enriched_data)} restaurants")
@@ -358,11 +450,15 @@ def enrich_tertiary():
 
         print(f"✓ Final enriched dataset created with {len(final_enriched_dataset)} restaurants")
 
+        # Write final CSV to disk to ensure single CSV continuity
+        csv_path = write_final_csv(final_enriched_dataset)
+
         return jsonify({
             'success': True,
             'count': len(enriched_data),
             'data': enriched_data,
-            'final_dataset_count': len(final_enriched_dataset)
+            'final_dataset_count': len(final_enriched_dataset),
+            'csv_path': csv_path
         })
 
     except Exception as e:
@@ -391,6 +487,7 @@ def inject_media():
             return jsonify({'error': 'No final enriched dataset available. Run tertiary enrichment first.'}), 400
 
         print(f"Media injection requested for {len(final_enriched_dataset)} restaurants...")
+        print(f"  → Using persisted CSV from: {final_csv_path}")
 
         # TODO: Implement actual media injection logic
         # For now, this is a pass-through that accepts the dataset
@@ -427,6 +524,7 @@ def push_to_export():
             return jsonify({'error': 'No final enriched dataset available. Run tertiary enrichment first.'}), 400
 
         print(f"Export push requested for {len(final_enriched_dataset)} restaurants...")
+        print(f"  → Using persisted CSV from: {final_csv_path}")
 
         # Create CSV from final dataset
         import io
@@ -439,7 +537,8 @@ def push_to_export():
             'instagram_handle', 'instagram_url',
             'tiktok_handle', 'tiktok_url', 'tiktok_videos',
             'facebook_url', 'opening_hours',
-            'cuisine_type', 'price_range'
+            'cuisine_type', 'price_range',
+            'tripadvisor_url', 'tripadvisor_status', 'tertiary_updates'
         ]
 
         writer = csv.DictWriter(output, fieldnames=fieldnames)
@@ -451,6 +550,7 @@ def push_to_export():
             row['gallery_images'] = json.dumps(row.get('gallery_images', [])) if row.get('gallery_images') else None
             row['opening_hours'] = json.dumps(row.get('opening_hours', [])) if row.get('opening_hours') else None
             row['tiktok_videos'] = json.dumps(row.get('tiktok_videos', [])) if row.get('tiktok_videos') else None
+            row['tertiary_updates'] = json.dumps(row.get('tertiary_updates', {})) if row.get('tertiary_updates') else None
             writer.writerow(row)
 
         csv_output = output.getvalue()
@@ -486,6 +586,7 @@ def push_to_video_injector():
             return jsonify({'error': 'No final enriched dataset available. Run tertiary enrichment first.'}), 400
 
         print(f"Video injector push requested for {len(final_enriched_dataset)} restaurants...")
+        print(f"  → Using persisted CSV from: {final_csv_path}")
 
         # TODO: Implement actual video injector integration
         # For now, this is a pass-through that accepts the dataset
