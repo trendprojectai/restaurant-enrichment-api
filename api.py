@@ -20,6 +20,20 @@ final_enriched_dataset = []
 secondary_dataset = []  # Store secondary results for merging
 final_csv_path = None  # Path to the persisted final CSV file
 
+# CANONICAL CSV SCHEMA - used by ALL CSV writers in the pipeline
+# This prevents schema mismatches and ensures all stages use the same fields
+CSV_FIELDNAMES = [
+    'google_place_id', 'cover_image', 'cover_image_alt',
+    'menu_url', 'menu_pdf_url', 'gallery_images',
+    'phone', 'phone_formatted', 'email',
+    'instagram_handle', 'instagram_url',
+    'tiktok_handle', 'tiktok_url', 'tiktok_videos',
+    'facebook_url', 'opening_hours',
+    'cuisine_type', 'price_range',
+    'tripadvisor_url', 'tripadvisor_status', 'tertiary_updates',
+    'tripadvisor_confidence', 'tripadvisor_distance_m', 'tripadvisor_match_notes'
+]
+
 
 def merge_enriched_results(base_dataset, fallback_results):
     """
@@ -87,28 +101,20 @@ def write_final_csv(dataset):
     final_csv_path = os.path.join(tempfile.gettempdir(), 'final_enriched_dataset.csv')
 
     with open(final_csv_path, 'w', encoding='utf-8', newline='') as f:
-        fieldnames = [
-            'google_place_id', 'cover_image', 'cover_image_alt',
-            'menu_url', 'menu_pdf_url', 'gallery_images',
-            'phone', 'phone_formatted', 'email',
-            'instagram_handle', 'instagram_url',
-            'tiktok_handle', 'tiktok_url', 'tiktok_videos',
-            'facebook_url', 'opening_hours',
-            'cuisine_type', 'price_range',
-            'tripadvisor_url', 'tripadvisor_status', 'tertiary_updates',
-            'tripadvisor_confidence', 'tripadvisor_distance_m', 'tripadvisor_match_notes'
-        ]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
         writer.writeheader()
 
         for record in dataset:
-            row = record.copy()
             # Convert lists/dicts to JSON
-            row['gallery_images'] = json.dumps(row.get('gallery_images', [])) if row.get('gallery_images') else None
-            row['opening_hours'] = json.dumps(row.get('opening_hours', [])) if row.get('opening_hours') else None
-            row['tiktok_videos'] = json.dumps(row.get('tiktok_videos', [])) if row.get('tiktok_videos') else None
-            row['tertiary_updates'] = json.dumps(row.get('tertiary_updates', {})) if row.get('tertiary_updates') else None
-            writer.writerow(row)
+            record_copy = record.copy()
+            record_copy['gallery_images'] = json.dumps(record_copy.get('gallery_images', [])) if record_copy.get('gallery_images') else None
+            record_copy['opening_hours'] = json.dumps(record_copy.get('opening_hours', [])) if record_copy.get('opening_hours') else None
+            record_copy['tiktok_videos'] = json.dumps(record_copy.get('tiktok_videos', [])) if record_copy.get('tiktok_videos') else None
+            record_copy['tertiary_updates'] = json.dumps(record_copy.get('tertiary_updates', {})) if record_copy.get('tertiary_updates') else None
+
+            # SAFE ROW WRITE: only include fields in canonical schema
+            safe_row = {key: record_copy.get(key) for key in CSV_FIELDNAMES}
+            writer.writerow(safe_row)
 
     print(f"✓ Final CSV written to: {final_csv_path}")
     return final_csv_path
@@ -240,29 +246,22 @@ def enrich():
                     'tripadvisor_match_notes': None,
                 })
         
-        # Write output CSV
+        # Write output CSV using canonical schema
         with open(temp_output_path, 'w', encoding='utf-8', newline='') as f:
-            fieldnames = [
-                'google_place_id', 'cover_image', 'cover_image_alt',
-                'menu_url', 'menu_pdf_url', 'gallery_images',
-                'phone', 'phone_formatted', 'email',
-                'instagram_handle', 'instagram_url',
-                'tiktok_handle', 'tiktok_url', 'tiktok_videos',
-                'facebook_url', 'opening_hours',
-                'cuisine_type', 'price_range',
-                'tripadvisor_url', 'tripadvisor_status', 'tertiary_updates'
-            ]
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
             writer.writeheader()
 
             for data in enriched_data:
-                row = data.copy()
                 # Convert lists/dicts to JSON
-                row['gallery_images'] = json.dumps(row.get('gallery_images', [])) if row.get('gallery_images') else None
-                row['opening_hours'] = json.dumps(row.get('opening_hours', [])) if row.get('opening_hours') else None
-                row['tiktok_videos'] = json.dumps(row.get('tiktok_videos', [])) if row.get('tiktok_videos') else None
-                row['tertiary_updates'] = json.dumps(row.get('tertiary_updates', {})) if row.get('tertiary_updates') else None
-                writer.writerow(row)
+                data_copy = data.copy()
+                data_copy['gallery_images'] = json.dumps(data_copy.get('gallery_images', [])) if data_copy.get('gallery_images') else None
+                data_copy['opening_hours'] = json.dumps(data_copy.get('opening_hours', [])) if data_copy.get('opening_hours') else None
+                data_copy['tiktok_videos'] = json.dumps(data_copy.get('tiktok_videos', [])) if data_copy.get('tiktok_videos') else None
+                data_copy['tertiary_updates'] = json.dumps(data_copy.get('tertiary_updates', {})) if data_copy.get('tertiary_updates') else None
+
+                # SAFE ROW WRITE: only include fields in canonical schema
+                safe_row = {key: data_copy.get(key) for key in CSV_FIELDNAMES}
+                writer.writerow(safe_row)
         
         # Read enriched output
         with open(temp_output_path, 'r', encoding='utf-8') as f:
@@ -569,33 +568,24 @@ def push_to_export():
         print(f"Export push requested for {len(final_enriched_dataset)} restaurants...")
         print(f"  → Using persisted CSV from: {final_csv_path}")
 
-        # Create CSV from final dataset
+        # Create CSV from final dataset using canonical schema
         import io
         output = io.StringIO()
 
-        fieldnames = [
-            'google_place_id', 'cover_image', 'cover_image_alt',
-            'menu_url', 'menu_pdf_url', 'gallery_images',
-            'phone', 'phone_formatted', 'email',
-            'instagram_handle', 'instagram_url',
-            'tiktok_handle', 'tiktok_url', 'tiktok_videos',
-            'facebook_url', 'opening_hours',
-            'cuisine_type', 'price_range',
-            'tripadvisor_url', 'tripadvisor_status', 'tertiary_updates',
-            'tripadvisor_confidence', 'tripadvisor_distance_m', 'tripadvisor_match_notes'
-        ]
-
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer = csv.DictWriter(output, fieldnames=CSV_FIELDNAMES)
         writer.writeheader()
 
         for record in final_enriched_dataset:
-            row = record.copy()
             # Convert lists/dicts to JSON
-            row['gallery_images'] = json.dumps(row.get('gallery_images', [])) if row.get('gallery_images') else None
-            row['opening_hours'] = json.dumps(row.get('opening_hours', [])) if row.get('opening_hours') else None
-            row['tiktok_videos'] = json.dumps(row.get('tiktok_videos', [])) if row.get('tiktok_videos') else None
-            row['tertiary_updates'] = json.dumps(row.get('tertiary_updates', {})) if row.get('tertiary_updates') else None
-            writer.writerow(row)
+            record_copy = record.copy()
+            record_copy['gallery_images'] = json.dumps(record_copy.get('gallery_images', [])) if record_copy.get('gallery_images') else None
+            record_copy['opening_hours'] = json.dumps(record_copy.get('opening_hours', [])) if record_copy.get('opening_hours') else None
+            record_copy['tiktok_videos'] = json.dumps(record_copy.get('tiktok_videos', [])) if record_copy.get('tiktok_videos') else None
+            record_copy['tertiary_updates'] = json.dumps(record_copy.get('tertiary_updates', {})) if record_copy.get('tertiary_updates') else None
+
+            # SAFE ROW WRITE: only include fields in canonical schema
+            safe_row = {key: record_copy.get(key) for key in CSV_FIELDNAMES}
+            writer.writerow(safe_row)
 
         csv_output = output.getvalue()
 
