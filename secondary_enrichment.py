@@ -1035,9 +1035,19 @@ def main():
             enriched_data.append(enrichment)
         except Exception as e:
             logger.error(f"Failed to enrich restaurant: {e}")
-            # Add empty enrichment to keep going
+            # Add empty enrichment with all fields to keep going
             enriched_data.append({
+                # Preserve input fields
                 'google_place_id': restaurant.get('google_place_id', ''),
+                'name': restaurant.get('name'),
+                'website': restaurant.get('website'),
+                'address': restaurant.get('address'),
+                'city': restaurant.get('city'),
+                'area': restaurant.get('area'),
+                'latitude': restaurant.get('latitude'),
+                'longitude': restaurant.get('longitude'),
+
+                # Secondary enrichment fields as None
                 'cover_image': None,
                 'cover_image_alt': None,
                 'menu_url': None,
@@ -1055,17 +1065,55 @@ def main():
                 'opening_hours': None,
                 'cuisine_type': None,
                 'price_range': None,
+
+                # Tertiary (TripAdvisor) fields as None
+                'tripadvisor_url': None,
+                'tripadvisor_status': None,
+                'tripadvisor_confidence': None,
+                'tripadvisor_distance_m': None,
+                'tripadvisor_match_notes': None,
+                'tertiary_updates': None,
             })
 
-    # Write output
+    # Write output using CANONICAL CSV SCHEMA (must match api.py)
+    # This is the complete 36-field schema used throughout the pipeline
     fieldnames = [
-        'google_place_id', 'cover_image', 'cover_image_alt',
-        'menu_url', 'menu_pdf_url', 'gallery_images',
-        'phone', 'phone_formatted', 'email',
-        'instagram_handle', 'instagram_url',
-        'tiktok_handle', 'tiktok_url', 'tiktok_videos',
-        'facebook_url', 'opening_hours',
-        'cuisine_type', 'price_range'
+        # Core identifiers (input fields)
+        'google_place_id',
+        'name',
+        'website',
+        'address',
+        'city',
+        'area',
+        'latitude',
+        'longitude',
+
+        # Secondary enrichment fields
+        'cover_image',
+        'cover_image_alt',
+        'menu_url',
+        'menu_pdf_url',
+        'gallery_images',
+        'phone',
+        'phone_formatted',
+        'email',
+        'instagram_handle',
+        'instagram_url',
+        'tiktok_handle',
+        'tiktok_url',
+        'tiktok_videos',
+        'facebook_url',
+        'opening_hours',
+        'cuisine_type',
+        'price_range',
+
+        # Tertiary (TripAdvisor) enrichment fields
+        'tripadvisor_url',
+        'tripadvisor_status',
+        'tripadvisor_confidence',
+        'tripadvisor_distance_m',
+        'tripadvisor_match_notes',
+        'tertiary_updates',
     ]
 
     with open(output_file, 'w', encoding='utf-8', newline='') as f:
@@ -1073,12 +1121,16 @@ def main():
         writer.writeheader()
 
         for data in enriched_data:
-            row = data.copy()
             # Convert lists/dicts to JSON
-            row['gallery_images'] = json.dumps(row.get('gallery_images', [])) if row.get('gallery_images') else None
-            row['opening_hours'] = json.dumps(row.get('opening_hours', [])) if row.get('opening_hours') else None
-            row['tiktok_videos'] = json.dumps(row.get('tiktok_videos', [])) if row.get('tiktok_videos') else None
-            writer.writerow(row)
+            data_copy = data.copy()
+            data_copy['gallery_images'] = json.dumps(data_copy.get('gallery_images', [])) if data_copy.get('gallery_images') else None
+            data_copy['opening_hours'] = json.dumps(data_copy.get('opening_hours', [])) if data_copy.get('opening_hours') else None
+            data_copy['tiktok_videos'] = json.dumps(data_copy.get('tiktok_videos', [])) if data_copy.get('tiktok_videos') else None
+            data_copy['tertiary_updates'] = json.dumps(data_copy.get('tertiary_updates', {})) if data_copy.get('tertiary_updates') else None
+
+            # SAFE ROW WRITE: only include fields in canonical schema
+            safe_row = {key: data_copy.get(key) for key in fieldnames}
+            writer.writerow(safe_row)
 
     logger.info(f"✅ COMPLETE! Wrote {len(enriched_data)} enriched records to {output_file}")
 
